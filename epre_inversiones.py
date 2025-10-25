@@ -59,7 +59,7 @@ def scrape_table(url, min_cols, max_rows=None):
 # --- Monedas ---
 @st.cache_data(ttl=300)
 def scrape_iol_monedas():
-    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/monedas"
+    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/monedas"  # ✅ Sin espacio al final
     result = scrape_table(url, min_cols=5)
     if "error" in result:
         return result
@@ -74,7 +74,8 @@ def scrape_iol_monedas():
             variacion = cols[4].get_text(strip=True)
             if compra != "-" and venta != "-":
                 try:
-                    float(compra); float(venta)
+                    float(compra)
+                    float(venta)
                     data.append({
                         "moneda": moneda,
                         "compra": compra,
@@ -89,7 +90,7 @@ def scrape_iol_monedas():
 # --- Fondos ---
 @st.cache_data(ttl=600)
 def scrape_iol_fondos():
-    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/fondos/todos"
+    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/fondos/todos"  # ✅ Sin espacio
     result = scrape_table(url, min_cols=9)
     if "error" in result:
         return result
@@ -115,7 +116,7 @@ def scrape_iol_fondos():
 # --- Bonos ---
 @st.cache_data(ttl=600)
 def scrape_iol_bonos():
-    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
+    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"  # ✅ Sin espacio
     result = scrape_table(url, min_cols=13)
     if "error" in result:
         return result
@@ -148,7 +149,7 @@ def page_datos_en_vivo_iol():
     with tabs[0]:
         with st.spinner("Cargando monedas..."):
             data = scrape_iol_monedas()
-        if "error" in 
+        if "error" in data:  # ✅ CORREGIDO: faltaba `data`
             st.error(data["error"])
         else:
             df = pd.DataFrame(data["datos"])
@@ -158,7 +159,7 @@ def page_datos_en_vivo_iol():
     with tabs[1]:
         with st.spinner("Cargando fondos..."):
             data = scrape_iol_fondos()
-        if "error" in 
+        if "error" in data:  # ✅ CORREGIDO
             st.error(data["error"])
         else:
             df = pd.DataFrame(data["datos"])
@@ -168,7 +169,7 @@ def page_datos_en_vivo_iol():
     with tabs[2]:
         with st.spinner("Cargando bonos..."):
             data = scrape_iol_bonos()
-        if "error" in 
+        if "error" in data:  # ✅ CORREGIDO
             st.error(data["error"])
         else:
             df = pd.DataFrame(data["datos"])
