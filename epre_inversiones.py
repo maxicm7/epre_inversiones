@@ -10,6 +10,7 @@ import traceback
 import json
 from huggingface_hub import InferenceClient
 import yfinance as yf
+from scipy.optimize import minimize
 
 # --- Configuración ---
 st.set_page_config(layout="wide", page_title="BPNos – Bonos, Fondos y Dólar")
@@ -59,7 +60,7 @@ def scrape_table(url, min_cols, max_rows=None):
 # --- Monedas ---
 @st.cache_data(ttl=300)
 def scrape_iol_monedas():
-    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/monedas"  # ✅ Sin espacio al final
+    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/monedas"
     result = scrape_table(url, min_cols=5)
     if "error" in result:
         return result
@@ -74,8 +75,7 @@ def scrape_iol_monedas():
             variacion = cols[4].get_text(strip=True)
             if compra != "-" and venta != "-":
                 try:
-                    float(compra)
-                    float(venta)
+                    float(compra); float(venta)
                     data.append({
                         "moneda": moneda,
                         "compra": compra,
@@ -90,7 +90,7 @@ def scrape_iol_monedas():
 # --- Fondos ---
 @st.cache_data(ttl=600)
 def scrape_iol_fondos():
-    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/fondos/todos"  # ✅ Sin espacio
+    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/fondos/todos"
     result = scrape_table(url, min_cols=9)
     if "error" in result:
         return result
@@ -116,7 +116,7 @@ def scrape_iol_fondos():
 # --- Bonos ---
 @st.cache_data(ttl=600)
 def scrape_iol_bonos():
-    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"  # ✅ Sin espacio
+    url = "https://iol.invertironline.com/mercado/cotizaciones/argentina/bonos/todos"
     result = scrape_table(url, min_cols=13)
     if "error" in result:
         return result
@@ -149,7 +149,7 @@ def page_datos_en_vivo_iol():
     with tabs[0]:
         with st.spinner("Cargando monedas..."):
             data = scrape_iol_monedas()
-        if "error" in data:  # ✅ CORREGIDO: faltaba `data`
+        if "error" in data:
             st.error(data["error"])
         else:
             df = pd.DataFrame(data["datos"])
@@ -159,60 +159,117 @@ def page_datos_en_vivo_iol():
     with tabs[1]:
         with st.spinner("Cargando fondos..."):
             data = scrape_iol_fondos()
-        if "error" in data:  # ✅ CORREGIDO
+        if "error" in data:
             st.error(data["error"])
         else:
             df = pd.DataFrame(data["datos"])
             st.dataframe(df, use_container_width=True)
             st.caption(f"Fuente: [IOL Fondos]({data['fuente']}) | Actualizado: {data['actualizado']}")
+            # Almacenar datos de fondos en session_state
+            st.session_state.iol_data = st.session_state.get('iol_data', {})
+            st.session_state.iol_data['fondos'] = data
 
     with tabs[2]:
         with st.spinner("Cargando bonos..."):
             data = scrape_iol_bonos()
-        if "error" in data:  # ✅ CORREGIDO
+        if "error" in data:
             st.error(data["error"])
         else:
             df = pd.DataFrame(data["datos"])
             st.dataframe(df, use_container_width=True)
             st.caption(f"Fuente: [IOL Bonos]({data['fuente']}) | Actualizado: {data['actualizado']}")
+            # Almacenar datos de bonos en session_state
+            st.session_state.iol_data = st.session_state.get('iol_data', {})
+            st.session_state.iol_data['bonos'] = data
 
 # --- Funciones auxiliares ---
 def main_page():
     st.title("BPNos – Bonos, Fondos y Dólar")
     st.write("Bienvenido. Usa el menú lateral para navegar.")
 
-def fetch_stock_prices_for_portfolio(tickers, start_date, end_date):
-    try:
-        # Descargar datos completos
-        data = yf.download(tickers, start=start_date, end=end_date)
-        
-        if data.empty:
-            st.error("No se encontraron datos para los tickers ingresados.")
-            return None
-        
-        # Intentar usar 'Adj Close', si no existe, usar 'Close'
-        if 'Adj Close' in data.columns:
-            prices = data['Adj Close']
-        elif 'Close' in data.columns:
-            st.warning("Usando 'Close' en lugar de 'Adj Close' (sin ajustes por dividendos/splits).")
-            prices = data['Close']
-        else:
-            st.error("No se encontró ni 'Adj Close' ni 'Close' en los datos descargados.")
-            return None
-        
-        # Si hay múltiples tickers, asegurar que sea un DataFrame
-        if isinstance(prices, pd.Series):
-            prices = prices.to_frame()
-        
-        return prices
+def get_price_from_iol(symbol):
+    """
+    Busca el precio actual de un símbolo scrapeado de IOL.
+    Retorna el precio 'ultimo' o None si no lo encuentra.
+    """
+    scraped_data = st.session_state.get('iol_data', {})
+    for key in ['fondos', 'bonos']:
+        data = scraped_data.get(key, {}).get('datos', [])
+        for item in data:
+            if item.get('simbolo', '').upper() == symbol.upper() or item.get('fondo', '').upper() == symbol.upper():
+                return item.get('ultimo')
+    return None
 
+def fetch_prices_for_portfolio(tickers, start_date, end_date):
+    """
+    Intenta obtener precios de yfinance. Si falla o no soporta el símbolo,
+    intenta usar los datos scrapeados de IOL como punto de partida.
+    """
+    # Intentar primero con yfinance
+    try:
+        data = yf.download(tickers, start=start_date, end=end_date)
+        if data.empty:
+            st.info("No se encontraron datos en Yahoo Finance.")
+        else:
+            if 'Adj Close' in data.columns:
+                prices = data['Adj Close']
+            elif 'Close' in data.columns:
+                st.warning("Usando 'Close' en lugar de 'Adj Close'.")
+                prices = data['Close']
+            else:
+                st.error("No se encontraron precios de cierre en los datos de Yahoo.")
+                return None
+
+            if isinstance(prices, pd.Series):
+                prices = prices.to_frame()
+
+            # Asegurar que las columnas coincidan con tickers
+            if isinstance(prices.columns, pd.MultiIndex):
+                prices.columns = prices.columns.get_level_values(0)
+
+            # Verificar si todos los tickers están presentes
+            missing_tickers = set(tickers) - set(prices.columns)
+            if missing_tickers:
+                st.info(f"Algunos tickers no están en Yahoo Finance: {missing_tickers}. Intentando con IOL...")
+
+            # Intentar rellenar los faltantes con IOL
+            for ticker in missing_tickers:
+                price = get_price_from_iol(ticker)
+                if price is not None:
+                    # Simular una serie constante para el ticker faltante
+                    prices[ticker] = price
+                    st.info(f"Usando precio constante de IOL para {ticker}: {price}")
+                else:
+                    st.error(f"No se encontró precio para {ticker} ni en Yahoo ni en IOL.")
+                    return None
+
+            return prices
     except Exception as e:
-        st.error(f"Error al cargar datos de Yahoo Finance: {str(e)}")
-        return None
+        st.warning(f"Error con Yahoo Finance: {str(e)}. Intentando con datos IOL...")
+
+    # Si Yahoo falla completamente, usar datos scrapeados
+    scraped_prices = {}
+    for ticker in tickers:
+        price = get_price_from_iol(ticker)
+        if price:
+            scraped_prices[ticker] = price
+        else:
+            st.error(f"No se encontró precio para {ticker} en IOL.")
+            return None
+
+    # Crear un DataFrame simulado con el precio actual para cada ticker
+    date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+    df = pd.DataFrame(index=date_range)
+    for ticker, price in scraped_prices.items():
+        df[ticker] = price  # Simula que el precio fue constante en el periodo
+    st.info("Usando datos scrapeados de IOL como precios constantes (sin historial real).")
+    return df
 
 def calculate_portfolio_performance(prices, weights):
     returns = prices.pct_change().dropna()
-    portfolio_return = (returns * weights).sum(axis=1)
+    # Asegurar que los pesos coincidan con las columnas de precios
+    weights_series = pd.Series(weights, index=prices.columns)
+    portfolio_return = (returns * weights_series).sum(axis=1)
     cumulative_return = (1 + portfolio_return).cumprod()
     return cumulative_return
 
@@ -261,9 +318,9 @@ def page_view_portfolio_returns():
 
     start_date = st.date_input("Fecha de inicio", value=pd.to_datetime("2023-01-01"))
     end_date = st.date_input("Fecha de fin", value=pd.to_datetime("today"))
-    
+
     if st.button("Calcular Rendimiento"):
-        prices = fetch_stock_prices_for_portfolio(portfolio["tickers"], start_date, end_date)
+        prices = fetch_prices_for_portfolio(portfolio["tickers"], start_date, end_date)
         if prices is not None:
             cum_return = calculate_portfolio_performance(prices, portfolio["weights"])
             st.line_chart(cum_return)
@@ -312,6 +369,76 @@ def page_investment_insights_chat():
         st.session_state.chat_messages.append({"role": "assistant", "content": response})
         st.chat_message("assistant").write(response)
 
+def optimize_portfolio(returns_df, method='min_vol'):
+    """
+    Optimiza un portafolio basado en rendimientos históricos.
+    - method: 'min_vol' o 'max_sharpe'
+    """
+    if returns_df.isnull().any().any():
+        st.error("Datos de rendimientos contienen valores nulos. No se puede optimizar.")
+        return None, None
+
+    mean_returns = returns_df.mean()
+    cov_matrix = returns_df.cov()
+
+    n = len(mean_returns)
+    init_weights = np.array([1 / n] * n)
+
+    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+    bounds = tuple((0, 1) for _ in range(n))
+
+    if method == 'min_vol':
+        objective = lambda w: np.sqrt(np.dot(w.T, np.dot(cov_matrix, w)))
+    elif method == 'max_sharpe':
+        risk_free_rate = 0.02 / 252  # Asumiendo 2% anual, diario
+        def sharpe_ratio(w):
+            portfolio_return = np.dot(w.T, mean_returns)
+            portfolio_vol = np.sqrt(np.dot(w.T, np.dot(cov_matrix, w)))
+            return -(portfolio_return - risk_free_rate) / portfolio_vol # Minimize -Sharpe
+        objective = sharpe_ratio
+
+    result = minimize(objective, init_weights, method='SLSQP', bounds=bounds, constraints=constraints)
+    if not result.success:
+        st.error(f"Optimización fallida: {result.message}")
+        return None, None
+
+    return result.x, result
+
+def page_optimize_portfolio():
+    st.header("⚖️ Optimización de Portafolio")
+    st.markdown("Selecciona activos de IOL para optimizar pesos.")
+
+    scraped_data = st.session_state.get('iol_data', {})
+    symbols_fondos = [item['fondo'] for item in scraped_data.get('fondos', {}).get('datos', [])]
+    symbols_bonos = [item['simbolo'] for item in scraped_data.get('bonos', {}).get('datos', [])]
+    all_symbols = symbols_fondos + symbols_bonos
+
+    selected_symbols = st.multiselect("Selecciona activos", all_symbols, default=all_symbols[:3])
+    if not selected_symbols:
+        st.warning("Selecciona al menos un activo.")
+        return
+
+    start_date = st.date_input("Fecha de inicio", value=pd.to_datetime("2023-01-01"))
+    end_date = st.date_input("Fecha de fin", value=pd.to_datetime("today"))
+
+    method = st.radio("Método de optimización", ["min_vol", "max_sharpe"])
+
+    if st.button("Optimizar"):
+        prices = fetch_prices_for_portfolio(selected_symbols, start_date, end_date)
+        if prices is not None:
+            returns = prices.pct_change().dropna()
+            if returns.empty or len(returns.columns) < 2:
+                st.error("No hay suficientes datos de rendimientos para los activos seleccionados.")
+                return
+
+            weights, result = optimize_portfolio(returns, method=method)
+            if weights is not None:
+                st.success("✅ Optimización exitosa.")
+                df_weights = pd.DataFrame({'Activo': selected_symbols, 'Peso': weights.round(4)})
+                st.table(df_weights)
+                # Opcional: Mostrar info del resultado
+                # st.json(result)
+
 # --- Inicialización de estado ---
 default_session_values = {
     'selected_page': "Welcome Page",
@@ -346,7 +473,8 @@ page_options = [
     "View Portfolio Returns",
     "Gestión de Riesgo",
     "Datos en Vivo – IOL",
-    "Chat de Análisis Cualitativo"
+    "Chat de Análisis Cualitativo",
+    "Optimización de Portafolios" # Nueva opción
 ]
 if 'selected_page' not in st.session_state or st.session_state.selected_page not in page_options:
     st.session_state.selected_page = "Welcome Page"
@@ -369,5 +497,7 @@ elif st.session_state.selected_page == "Datos en Vivo – IOL":
     page_datos_en_vivo_iol()
 elif st.session_state.selected_page == "Chat de Análisis Cualitativo":
     page_investment_insights_chat()
+elif st.session_state.selected_page == "Optimización de Portafolios":
+    page_optimize_portfolio()
 else:
     main_page()
