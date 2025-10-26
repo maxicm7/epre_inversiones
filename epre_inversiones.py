@@ -183,13 +183,31 @@ def main_page():
 
 def fetch_stock_prices_for_portfolio(tickers, start_date, end_date):
     try:
-        data = yf.download(tickers, start=start_date, end=end_date)['Adj Close']
+        # Descargar datos completos
+        data = yf.download(tickers, start=start_date, end=end_date)
+        
         if data.empty:
             st.error("No se encontraron datos para los tickers ingresados.")
             return None
-        return data
+        
+        # Intentar usar 'Adj Close', si no existe, usar 'Close'
+        if 'Adj Close' in data.columns:
+            prices = data['Adj Close']
+        elif 'Close' in data.columns:
+            st.warning("Usando 'Close' en lugar de 'Adj Close' (sin ajustes por dividendos/splits).")
+            prices = data['Close']
+        else:
+            st.error("No se encontró ni 'Adj Close' ni 'Close' en los datos descargados.")
+            return None
+        
+        # Si hay múltiples tickers, asegurar que sea un DataFrame
+        if isinstance(prices, pd.Series):
+            prices = prices.to_frame()
+        
+        return prices
+
     except Exception as e:
-        st.error(f"Error al cargar datos de Yahoo Finance: {e}")
+        st.error(f"Error al cargar datos de Yahoo Finance: {str(e)}")
         return None
 
 def calculate_portfolio_performance(prices, weights):
