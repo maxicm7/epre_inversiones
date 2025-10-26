@@ -247,9 +247,10 @@ def calculate_portfolio_performance(prices, weights):
     cumulative_return = (1 + portfolio_return).cumprod()
     return cumulative_return
 
-def optimize_portfolio(prices, risk_free_rate=0.0):
+def optimize_portfolio(prices, risk_free_rate=0.0, opt_type="Mínima Volatilidad"):
     """
-    Optimiza los pesos de la cartera usando la frontera eficiente.
+    Optimiza los pesos de la cartera según el tipo elegido.
+    Tipos: 'Mínima Volatilidad', 'Máximo Ratio Sharpe', 'Retorno Máximo'
     """
     returns = prices.pct_change().dropna()
     
@@ -261,9 +262,65 @@ def optimize_portfolio(prices, risk_free_rate=0.0):
     cov_matrix = returns.cov()
     
     num_assets = len(mean_returns)
-    args = (mean_returns, cov_matrix, risk_free_rate)
     
-    # Función objetivo: minimizar la varianza (riesgo)
+    # Restricción: suma de pesos = 1
+    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+    # Límites: pesos entre 0 y 1 (long-only)
+    bounds = tuple((0, 1) for _ in range(num_assets))
+    
+    # Peso inicial
+    init_guess = np.array([1/num_assets] * num_assets)
+
+    # Funciones objetivo según el tipo
+    if opt_type == "Mínima Volatilidad":
+        def objective(weights):
+            return np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))) # Volatilidad (raíz de la varianza)
+        
+        result = minimize(objective, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
+
+    elif opt_type == "Retorno Máximo":
+        def objective(weights):
+            return -np.sum(mean_returns * weights) # Negativo porque minimize minimiza
+        
+        result = minimize(objective, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
+
+    elif opt_type == "Máximo Ratio Sharpe":
+        def objective(weights):
+            portfolio_return = np.sum(mean_returns * weights)
+            portfolio_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights)))
+            # Maximizar el negativo del Sharpe (porque minimize minimiza)
+            # Evitar división por cero
+            if portfolio_vol == 0:
+                return np.inf
+            return -(portfolio_return - risk_free_rate) / portfolio_vol
+        
+        result = minimize(objective, init_guess, method='SLSQP', bounds=bounds, constraints=constraints)
+    
+    else:
+        st.error(f"Tipo de optimización desconocido: {opt_type}")
+        return None
+
+    if result.success:
+        optimal_weights = result.x
+        expected_return = np.sum(mean_returns * optimal_weights)
+        expected_volatility = np.sqrt(np.dot(optimal_weights.T, np.dot(cov_matrix, optimal_weights)))
+        sharpe_ratio = (expected_return - risk_free_rate) / expected_volatility if expected_volatility > 0 else 0
+
+        # Devolver un diccionario con los resultados
+        output = {
+            "weights": optimal_weights,
+            "expected_return": expected_return,
+            "volatility": expected_volatility,
+            "tickers": list(prices.columns)
+        }
+        # Agregar Sharpe solo si aplica
+        if opt_type in ["Máximo Ratio Sharpe"]:
+            output["sharpe_ratio"] = sharpe_ratio
+
+        return output
+    else:
+        st.error(f"No se pudo optimizar la cartera ({opt_type}): {result.message}")
+        return None
     def portfolio_variance(weights):
         return np.dot(weights.T, np.dot(cov_matrix, weights))
     
@@ -406,7 +463,7 @@ def page_view_portfolio_returns():
 
 def page_optimize_portfolio():
     st.header("📊 Optimización de Cartera (Markowitz)")
-    st.markdown("Calcula los pesos óptimos para maximizar el ratio Sharpe.")
+    st.markdown("Calcula los pesos óptimos según el objetivo elegido.")
 
     portfolios = st.session_state.get("portfolios", {})
     if not portfolios:
@@ -419,21 +476,32 @@ def page_optimize_portfolio():
 
     start_date = st.date_input("Fecha de inicio", value=pd.to_datetime("2023-01-01"))
     end_date = st.date_input("Fecha de fin", value=pd.to_datetime("today"))
-    
+
+    # Nuevo: Selector de tipo de optimización
+    optimization_type = st.selectbox(
+        "Tipo de Optimización",
+        ["Mínima Volatilidad", "Máximo Ratio Sharpe", "Retorno Máximo"]
+    )
+
     if st.button("Optimizar Cartera"):
         prices = fetch_stock_prices_for_portfolio(portfolio["tickers"], start_date, end_date)
         if prices is not None and len(prices) > 1:
             with st.spinner("Optimizando..."):
-                result = optimize_portfolio(prices)
+                # Pasar el tipo de optimización a la función
+                result = optimize_portfolio(prices, risk_free_rate=0.0, opt_type=optimization_type)
                 if result:
-                    st.success("✅ Cartera optimizada!")
+                    st.success(f"✅ Cartera optimizada ({optimization_type})!")
                     
                     col1, col2 = st.columns(2)
                     with col1:
                         st.metric("Retorno Esperado", f"{result['expected_return']:.2%}")
                         st.metric("Volatilidad", f"{result['volatility']:.2%}")
                     with col2:
-                        st.metric("Ratio Sharpe", f"{result['sharpe_ratio']:.2f}")
+                        # Solo mostrar Sharpe si aplica
+                        if 'sharpe_ratio' in result:
+                            st.metric("Ratio Sharpe", f"{result['sharpe_ratio']:.2f}")
+                        else:
+                            st.metric("Ratio Sharpe", "N/A")
                     
                     # Mostrar pesos optimizados
                     weights_df = pd.DataFrame({
