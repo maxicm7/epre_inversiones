@@ -12,6 +12,7 @@ from huggingface_hub import InferenceClient
 import yfinance as yf
 from scipy.optimize import minimize
 import plotly.express as px
+import io
 
 # --- Configuración ---
 st.set_page_config(layout="wide", page_title="BPNos – Bonos, Fondos y Dólar")
@@ -160,7 +161,7 @@ def page_datos_en_vivo_iol():
     with tabs[1]:
         with st.spinner("Cargando fondos..."):
             data = scrape_iol_fondos()
-        if "error" in data:  # ✅ CORREGIDO
+        if "error" in data: # ✅ CORREGIDO
             st.error(data["error"])
         else:
             df = pd.DataFrame(data["datos"])
@@ -170,7 +171,7 @@ def page_datos_en_vivo_iol():
     with tabs[2]:
         with st.spinner("Cargando bonos..."):
             data = scrape_iol_bonos()
-        if "error" in data:  # ✅ CORREGIDO
+        if "error" in data: # ✅ CORREGIDO
             st.error(data["error"])
         else:
             df = pd.DataFrame(data["datos"])
@@ -295,24 +296,84 @@ def optimize_portfolio(prices, risk_free_rate=0.0):
 
 def page_create_portfolio():
     st.header("💼 Crear / Editar Portafolio")
-    portfolios = st.session_state.get("portfolios", {})
     portfolio_name = st.text_input("Nombre del portafolio")
-    tickers = st.text_area("Tickers (separados por comas)", "AAPL, MSFT")
-    weights = st.text_area("Pesos (deben sumar 1.0)", "0.5, 0.5")
+    tickers_input = st.text_area("Tickers (separados por comas)", "AAPL, MSFT")
+    weights_input = st.text_area("Pesos (deben sumar 1.0)", "0.5, 0.5")
     
-    if st.button("Guardar Portafolio"):
-        if portfolio_name and tickers and weights:
-            tickers_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-            try:
-                weights_list = [float(w.strip()) for w in weights.split(",") if w.strip()]
-            except ValueError:
-                st.error("Los pesos deben ser números.")
-                return
-            if len(tickers_list) != len(weights_list):
-                st.error("Número de tickers y pesos debe coincidir.")
-            elif abs(sum(weights_list) - 1.0) > 1e-6:
-                st.error("Los pesos deben sumar 1.0")
-            else:
+    if tickers_input and weights_input:
+        tickers_list = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+        try:
+            weights_list = [float(w.strip()) for w in weights_input.split(",") if w.strip()]
+        except ValueError:
+            st.error("Los pesos deben ser números.")
+            return
+
+        if len(tickers_list) != len(weights_list):
+            st.error("Número de tickers y pesos debe coincidir.")
+        elif abs(sum(weights_list) - 1.0) > 1e-6:
+            st.error("Los pesos deben sumar 1.0")
+        else:
+            # Crear DataFrame para visualización
+            df_data = []
+            # Intentar obtener precios de IOL
+            bonos_data = scrape_iol_bonos()
+            fondos_data = scrape_iol_fondos()
+            monedas_data = scrape_iol_monedas() # Opcional, si se quieren precios de monedas
+
+            for ticker, weight in zip(tickers_list, weights_list):
+                precio_iol = None
+                variacion_iol = None
+                tipo = "Desconocido"
+
+                # Buscar en bonos
+                for row in bonos_data.get("datos", []):
+                    if row["simbolo"] == ticker:
+                        precio_iol = row["ultimo"]
+                        variacion_iol = row["variacion"]
+                        tipo = "Bonos"
+                        break
+                # Si no está en bonos, buscar en fondos
+                if precio_iol is None:
+                    for row in fondos_data.get("datos", []):
+                        if row["fondo"] == ticker:
+                            precio_iol = row["ultimo"]
+                            variacion_iol = row["variacion"]
+                            tipo = "Fondos"
+                            break
+                # Si no está en fondos, buscar en monedas
+                if precio_iol is None:
+                    for row in monedas_data.get("datos", []):
+                        if row["moneda"] == ticker:
+                            precio_iol = row["venta"] # O 'compra', dependiendo del interés
+                            variacion_iol = row["variacion"]
+                            tipo = "Monedas"
+                            break
+
+                df_data.append({
+                    "Ticker": ticker,
+                    "Peso": weight,
+                    "Precio_IOL": precio_iol,
+                    "Variacion_IOL": variacion_iol,
+                    "Tipo": tipo
+                })
+
+            df = pd.DataFrame(df_data)
+
+            st.subheader("Visualización de Activos Seleccionados")
+            st.dataframe(df, use_container_width=True)
+
+            # Botón para descargar el DataFrame
+            csv = df.to_csv(index=False, sep=';').encode('utf-8')
+            st.download_button(
+                label="📥 Descargar tabla de activos (CSV)",
+                data=csv,
+                file_name=f'portfolio_{portfolio_name}_activos.csv',
+                mime='text/csv',
+            )
+
+            # Guardar portafolio si se da nombre
+            if portfolio_name:
+                portfolios = st.session_state.get("portfolios", {})
                 portfolios[portfolio_name] = {
                     "tickers": tickers_list,
                     "weights": weights_list
@@ -323,8 +384,6 @@ def page_create_portfolio():
                     st.success("✅ Portafolio guardado.")
                 else:
                     st.error(f"❌ Error al guardar: {msg}")
-        else:
-            st.warning("Completa todos los campos.")
 
 def page_view_portfolio_returns():
     st.header("📈 Ver Rendimiento de Portafolio")
@@ -390,88 +449,6 @@ def page_optimize_portfolio():
         else:
             st.warning("Necesitas al menos 2 días de datos para optimizar.")
 
-def calculate_var(returns, confidence_level=0.95):
-    """Calcula el Value at Risk (VaR) histórico."""
-    if len(returns) < 100:
-        return None  # Necesitamos suficientes datos
-    sorted_returns = np.sort(returns)
-    index = int((1 - confidence_level) * len(sorted_returns))
-    return sorted_returns[index]
-
-def calculate_drawdown(prices):
-    """Calcula el drawdown máximo."""
-    cumulative = (1 + prices.pct_change()).cumprod()
-    rolling_max = cumulative.cummax()
-    drawdown = (cumulative - rolling_max) / rolling_max
-    max_drawdown = drawdown.min()
-    return max_drawdown
-
-def stress_test(prices, scenario="crash", magnitude=-0.2):
-    """Simula un escenario de estrés."""
-    returns = prices.pct_change().dropna()
-    if scenario == "crash":
-        stressed_returns = returns + magnitude
-    elif scenario == "inflation":
-        stressed_returns = returns - 0.01  # -1% mensual
-    else:
-        stressed_returns = returns
-    
-    stressed_cumulative = (1 + stressed_returns).cumprod()
-    return stressed_cumulative
-
-def page_risk_management():
-    st.header("⚠️ Gestión de Riesgo")
-    st.markdown("Análisis de riesgo para tu portafolio seleccionado.")
-
-    portfolios = st.session_state.get("portfolios", {})
-    if not portfolios:
-        st.info("No hay portafolios guardados.")
-        return
-
-    name = st.selectbox("Selecciona un portafolio", list(portfolios.keys()))
-    portfolio = portfolios[name]
-    st.json(portfolio)
-
-    start_date = st.date_input("Fecha de inicio", value=pd.to_datetime("2023-01-01"))
-    end_date = st.date_input("Fecha de fin", value=pd.to_datetime("today"))
-    
-    if st.button("Calcular Riesgos"):
-        prices = fetch_stock_prices_for_portfolio(portfolio["tickers"], start_date, end_date)
-        if prices is not None:
-            # Calcular rendimientos
-            returns = prices.pct_change().dropna()
-            if returns.empty:
-                st.error("No hay datos de rendimientos.")
-                return
-            
-            # VaR
-            var_95 = calculate_var(returns.mean(axis=1), 0.95)
-            var_99 = calculate_var(returns.mean(axis=1), 0.99)
-            
-            # Drawdown
-            max_drawdown = calculate_drawdown(prices)
-            
-            st.subheader("📉 Value at Risk (VaR)")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("VaR 95%", f"{var_95:.2%}" if var_95 is not None else "Insuficientes datos")
-            with col2:
-                st.metric("VaR 99%", f"{var_99:.2%}" if var_99 is not None else "Insuficientes datos")
-            
-            st.subheader("📉 Drawdown Máximo")
-            st.metric("Max Drawdown", f"{max_drawdown:.2%}" if max_drawdown is not None else "Insuficientes datos")
-            
-            # Stress Testing
-            st.subheader("💥 Stress Testing")
-            scenario = st.selectbox("Escenario", ["Crash (-20%)", "Inflación (-1% mensual)", "Normal"])
-            magnitude = -0.2 if "Crash" in scenario else -0.01 if "Inflación" in scenario else 0
-            
-            stressed = stress_test(prices, scenario.split()[0].lower(), magnitude)
-            if stressed is not None:
-                st.line_chart(stressed)
-                final_value = stressed.iloc[-1]
-                st.metric("Valor Final (Stress)", f"{final_value:.2f}")
-
 def get_hf_response(prompt, api_key, model, temp=0.5):
     try:
         client = InferenceClient(api_key=api_key)
@@ -492,6 +469,31 @@ def page_investment_insights_chat():
         st.warning("Ingresa tu Hugging Face API Key en la barra lateral.")
         return
 
+    # Subir archivo CSV con activos
+    uploaded_csv = st.file_uploader("Sube la tabla de activos (CSV)", type=['csv'])
+    df_from_csv = None
+    if uploaded_csv is not None:
+        try:
+            df_from_csv = pd.read_csv(uploaded_csv, sep=';') # Ajustar separador si es necesario
+            st.info("Tabla de activos cargada.")
+        except Exception as e:
+            st.error(f"Error al leer el CSV: {e}")
+
+    # Subir archivo PDF con contexto
+    uploaded_pdf = st.file_uploader("Sube un PDF con contexto (opcional)", type=['pdf'])
+    pdf_content = ""
+    if uploaded_pdf is not None:
+        try:
+            import PyPDF2
+            pdf_reader = PyPDF2.PdfReader(uploaded_pdf)
+            pdf_content = ""
+            for page in pdf_reader.pages:
+                pdf_content += page.extract_text()
+            st.info("PDF cargado y leído.")
+        except Exception as e:
+            st.error(f"Error al leer el PDF: {e}")
+
+    # Inicializar historial de chat
     if 'chat_messages' not in st.session_state:
         st.session_state.chat_messages = []
 
@@ -499,12 +501,19 @@ def page_investment_insights_chat():
         st.chat_message(msg["role"]).write(msg["content"])
 
     if prompt := st.chat_input("Escribe tu consulta de inversión..."):
+        # Añadir contexto de la tabla CSV si existe
+        csv_context = f"\nTabla de Activos:\n{df_from_csv.to_csv(index=False, sep=';')}\n" if df_from_csv is not None else ""
+        # Añadir contexto del PDF si existe
+        pdf_context = f"\nContenido del PDF:\n{pdf_content}\n" if pdf_content else ""
+
+        full_prompt = f"{csv_context}{pdf_context}{prompt}"
+
         st.session_state.chat_messages.append({"role": "user", "content": prompt})
         st.chat_message("user").write(prompt)
 
         with st.spinner("Pensando..."):
             response = get_hf_response(
-                prompt,
+                full_prompt,
                 st.session_state.hf_api_key,
                 st.session_state.hf_model,
                 st.session_state.hf_temp
@@ -542,12 +551,11 @@ st.sidebar.markdown("---")
 st.sidebar.title("Navigation")
 page_options = [
     "Welcome Page",
-    "Create/Edit Portfolios",
+    "Create/Edit Portfolios", # Aquí se agregó la visualización
     "View Portfolio Returns",
-    "Optimize Portfolio",  # ✅ Nueva página
-    "Gestión de Riesgo",   # ✅ Ahora funcional
+    "Optimize Portfolio",
     "Datos en Vivo – IOL",
-    "Chat de Análisis Cualitativo"
+    "Chat de Análisis Cualitativo" # Ahora puede leer CSV y PDF
 ]
 if 'selected_page' not in st.session_state or st.session_state.selected_page not in page_options:
     st.session_state.selected_page = "Welcome Page"
@@ -566,8 +574,6 @@ elif st.session_state.selected_page == "View Portfolio Returns":
     page_view_portfolio_returns()
 elif st.session_state.selected_page == "Optimize Portfolio":
     page_optimize_portfolio()
-elif st.session_state.selected_page == "Gestión de Riesgo":
-    page_risk_management()
 elif st.session_state.selected_page == "Datos en Vivo – IOL":
     page_datos_en_vivo_iol()
 elif st.session_state.selected_page == "Chat de Análisis Cualitativo":
