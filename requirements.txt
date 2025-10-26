@@ -5,4 +5,4 @@ numpy
 yfinance
 beautifulsoup4
 huggingface_hub
-scioy
+scipy
