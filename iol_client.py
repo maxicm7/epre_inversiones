@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 # ── Base URL ──────────────────────────────────────────────────────────────
-BASE     = "https://api.invertironline.com"
+BASE     = "https://api.invertironline.com"  # ✅ Fixed: No trailing spaces
 AUTH_URL = f"{BASE}/token"
 API_URL  = f"{BASE}/api/v2"
 
@@ -62,7 +62,7 @@ class IOLClient:
     """
 
     def __init__(self, username: str, password: str):
-        self.username = username
+        self.username = username.strip()
         self.password = password
         self._token: Optional[str] = None
         self._token_expiry: Optional[datetime] = None
@@ -112,6 +112,8 @@ class IOLClient:
         """GET autenticado. Reintenta una vez si el token expiró (401)."""
         if not self._ensure_token():
             return None
+        
+        # ✅ Fixed: Ensure clean URL construction
         url = f"{API_URL}{endpoint}"
         try:
             resp = requests.get(url, headers=self.headers, params=params, timeout=15)
@@ -178,33 +180,30 @@ class IOLClient:
         if not self._ensure_token():
             return pd.DataFrame()
 
-        # Convertir fechas al formato dd-MM-yyyy que acepta IOL
+        # ✅ Fixed: Convertir fechas correctamente
         try:
-            from datetime import datetime as dt
-            d_desde = dt.strptime(fecha_desde, "%Y-%m-%d")
-            d_hasta = dt.strptime(fecha_hasta, "%Y-%m-%d")
+            d_desde = datetime.strptime(fecha_desde, "%Y-%m-%d")
+            d_hasta = datetime.strptime(fecha_hasta, "%Y-%m-%d")
         except Exception:
-            d_desde = d_hasta = None
+            st.error("❌ Formato de fecha inválido. Use AAAA-MM-DD")
+            return pd.DataFrame()
 
-        # IOL acepta dd-MM-yyyy en la URL de seriehistorica
-        formatos = []
-        if d_desde and d_hasta:
-            formatos = [
-                (d_desde.strftime("%d-%m-%Y"), d_hasta.strftime("%d-%m-%Y")),  # dd-MM-yyyy ← más común
-                (fecha_desde, fecha_hasta),                                      # yyyy-MM-dd
-                (d_desde.strftime("%Y-%m-%d"), d_hasta.strftime("%Y-%m-%d")),   # yyyy-MM-dd explícito
-            ]
-        else:
-            formatos = [(fecha_desde, fecha_hasta)]
+        # ✅ Fixed: IOL acepta dd-MM-yyyy en la URL de seriehistorica
+        formatos = [
+            (d_desde.strftime("%d-%m-%Y"), d_hasta.strftime("%d-%m-%Y")),  # dd-MM-yyyy (formato IOL)
+        ]
 
         debug_lines = []
         for fmt_desde, fmt_hasta in formatos:
-            endpoint = (f"/{mercado}/Titulos/{simbolo}/Cotizacion"
-                        f"/seriehistorica/{fmt_desde}/{fmt_hasta}/{ajustada}")
+            # ✅ Fixed: Construcción correcta del endpoint
+            endpoint = f"/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/{fmt_desde}/{fmt_hasta}/{ajustada}"
             url = f"{API_URL}{endpoint}"
+            
+            debug_lines.append(f"🔍 URL: {url}")
+            
             try:
                 resp = requests.get(url, headers=self.headers, timeout=20)
-                debug_lines.append(f"[{resp.status_code}] {url}")
+                debug_lines.append(f"   Status: {resp.status_code}")
 
                 if resp.status_code == 401:
                     self._token = None
@@ -212,12 +211,15 @@ class IOLClient:
                         continue
                     resp = requests.get(url, headers=self.headers, timeout=20)
 
-                if resp.status_code != 200:
-                    debug_lines.append(f"  → Error: {resp.text[:200]}")
+                if resp.status_code == 400:
+                    debug_lines.append(f"   ❌ Error 400: Request inválido. Verifique símbolo y fechas.")
+                    continue
+                elif resp.status_code != 200:
+                    debug_lines.append(f"   ❌ Error: {resp.text[:200]}")
                     continue
 
                 data = resp.json()
-                debug_lines.append(f"  → Tipo respuesta: {type(data).__name__}, "
+                debug_lines.append(f"   → Tipo respuesta: {type(data).__name__}, "
                                    f"len: {len(data) if isinstance(data, list) else '—'}")
 
                 # Normalizar estructura
@@ -228,7 +230,7 @@ class IOLClient:
                            data.get("historico", []))))
 
                 if not data or (isinstance(data, list) and len(data) == 0):
-                    debug_lines.append("  → Lista vacía, probando siguiente formato...")
+                    debug_lines.append("   ⚠️ Lista vacía")
                     continue
 
                 # ¡Datos encontrados! Parsear
@@ -236,8 +238,8 @@ class IOLClient:
                 if df.empty:
                     continue
 
-                debug_lines.append(f"  → Columnas: {list(df.columns)}")
-                debug_lines.append(f"  → {len(df)} filas obtenidas ✅")
+                debug_lines.append(f"   → Columnas: {list(df.columns)}")
+                debug_lines.append(f"   → {len(df)} filas obtenidas ✅")
 
                 # Fecha
                 fecha_col = next((c for c in df.columns if "fecha" in c.lower()), None)
@@ -262,13 +264,14 @@ class IOLClient:
                 return df.sort_index()
 
             except Exception as e:
-                debug_lines.append(f"  → Excepción: {e}")
+                debug_lines.append(f"   → Excepción: {e}")
                 continue
 
         # Ningún formato funcionó → mostrar debug expandido para diagnóstico
         with st.expander("🔍 Debug – Serie histórica (sin datos)", expanded=True):
             st.code("\n".join(debug_lines))
 
+        st.warning("⚠️ No se encontraron datos. Verifique:\n- El símbolo es correcto (use 'Verificar símbolo')\n- El mercado seleccionado\n- El rango de fechas")
         return pd.DataFrame()
 
     # ── 6. FCI – todos los fondos ─────────────────────────────────────────
