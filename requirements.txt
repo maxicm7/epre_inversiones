@@ -8,3 +8,5 @@ huggingface_hub
 scipy
 plotly
 PyPDF
+statsmodels
+prophet
