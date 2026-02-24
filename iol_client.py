@@ -186,7 +186,7 @@ class IOLClient:
         try:
             df = pd.DataFrame(data)
             if "fechaHora" in df.columns:
-                df["fechaHora"] = pd.to_datetime(df["fechaHora"])
+                df["fechaHora"] = pd.to_datetime(df["fechaHora"], format="ISO8601")
                 df.set_index("fechaHora", inplace=True)
                 df.index = df.index.normalize()  # solo fecha, sin hora
             if "ultimoPrecio" in df.columns:
