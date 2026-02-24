@@ -178,22 +178,75 @@ class IOLClient:
           ajustada : "ajustada" | "sinAjustar"
           fechas   : "YYYY-MM-DD"
         """
+        # IOL acepta fechas en formato YYYY-MM-DD en la URL
         endpoint = (f"/{mercado}/Titulos/{simbolo}/Cotizacion"
                     f"/seriehistorica/{fecha_desde}/{fecha_hasta}/{ajustada}")
-        data = self._get(endpoint)
-        if data is None:
+
+        # Llamada raw para ver respuesta completa en caso de error
+        if not self._ensure_token():
             return pd.DataFrame()
+
+        url = f"{API_URL}{endpoint}"
+        try:
+            resp = requests.get(url, headers=self.headers, timeout=20)
+
+            # Debug visible en la app
+            with st.expander("🔍 Debug – Serie histórica", expanded=False):
+                st.code(f"URL: {url}\nStatus: {resp.status_code}")
+                if resp.status_code != 200:
+                    st.error(f"Respuesta IOL: {resp.text[:500]}")
+
+            if resp.status_code == 401:
+                self._token = None
+                if not self.authenticate():
+                    return pd.DataFrame()
+                resp = requests.get(url, headers=self.headers, timeout=20)
+
+            if resp.status_code != 200:
+                st.error(f"IOL respondió {resp.status_code}: {resp.text[:300]}")
+                return pd.DataFrame()
+
+            data = resp.json()
+
+        except Exception as e:
+            st.error(f"Error de conexión: {e}")
+            return pd.DataFrame()
+
+        if data is None or (isinstance(data, list) and len(data) == 0):
+            return pd.DataFrame()
+
+        # La API puede devolver lista directa o dict con clave "cotizaciones"
+        if isinstance(data, dict):
+            data = data.get("cotizaciones", data.get("data", data.get("items", [])))
+            if not isinstance(data, list):
+                data = [data]
+
         try:
             df = pd.DataFrame(data)
-            if "fechaHora" in df.columns:
-                df["fechaHora"] = pd.to_datetime(df["fechaHora"], format="ISO8601")
-                df.set_index("fechaHora", inplace=True)
-                df.index = df.index.normalize()  # solo fecha, sin hora
-            if "ultimoPrecio" in df.columns:
-                df["ultimoPrecio"] = pd.to_numeric(df["ultimoPrecio"], errors="coerce")
+            if df.empty:
+                return df
+
+            # Detectar columna de fecha (puede variar)
+            fecha_col = next((c for c in df.columns if "fecha" in c.lower()), None)
+            if fecha_col:
+                df[fecha_col] = pd.to_datetime(df[fecha_col], format="ISO8601")
+                df.set_index(fecha_col, inplace=True)
+                df.index = df.index.normalize()
+
+            # Detectar columna de precio
+            precio_col = next((c for c in df.columns
+                               if any(p in c.lower() for p in ["ultimo", "cierre", "close", "precio"])), None)
+            if precio_col:
+                df[precio_col] = pd.to_numeric(df[precio_col], errors="coerce")
+                # Renombrar a ultimoPrecio para uniformidad
+                if precio_col != "ultimoPrecio":
+                    df.rename(columns={precio_col: "ultimoPrecio"}, inplace=True)
+
             return df.sort_index()
+
         except Exception as e:
             st.error(f"Error parseando serie histórica: {e}")
+            st.write("Muestra de datos recibidos:", str(data)[:300])
             return pd.DataFrame()
 
     # ── 6. FCI – todos los fondos ─────────────────────────────────────────
@@ -427,10 +480,16 @@ def page_iol_explorer():
     # ── Tab 3: Serie Histórica ───────────────────────────────────────────
     with tabs[2]:
         st.subheader("Serie histórica de precios (IOL)")
+
+        st.info("""
+        **Símbolos válidos en BCBA:** AL30, GD30, GD35, AE38, AL41, GGAL, BMA, PAMP, YPF, TXAR  
+        **Nota:** Usá el símbolo **sin** sufijos como D/C (ej: `AE38` no `AE38D`)
+        """)
+
         c1, c2 = st.columns(2)
         with c1:
             simbolo_hist = st.text_input("Símbolo", "AL30", key="hist_sim",
-                                          help="Ej: AL30, GD30, GGAL, BMA, PAMP")
+                                          help="Ej: AL30, GD30, GGAL, BMA, PAMP — sin sufijo D/C")
         with c2:
             mercado_hist = st.selectbox("Mercado", list(MERCADOS.keys()), key="hist_merc")
 
@@ -442,23 +501,37 @@ def page_iol_explorer():
         with c5:
             ajustada = st.selectbox("Ajuste", ["ajustada", "sinAjustar"], key="hist_ajuste")
 
-        if st.button("📈 Obtener serie", key="btn_hist"):
-            with st.spinner("Descargando serie histórica..."):
-                df_hist = client.get_serie_historica(
-                    simbolo_hist, str(desde), str(hasta), ajustada,
-                    mercado=MERCADOS[mercado_hist]
-                )
-            if df_hist.empty:
-                st.warning("Sin datos. Verificá el símbolo y el rango de fechas.")
-            else:
-                st.session_state["iol_hist_df"]     = df_hist
-                st.session_state["iol_hist_simbolo"] = simbolo_hist
-                st.line_chart(df_hist["ultimoPrecio"] if "ultimoPrecio" in df_hist.columns
-                              else df_hist.iloc[:, 0])
-                st.dataframe(df_hist, use_container_width=True)
-                csv = df_hist.to_csv(sep=";").encode("utf-8")
-                st.download_button("📥 CSV", csv,
-                                   file_name=f"hist_{simbolo_hist}.csv", mime="text/csv")
+        col_test, col_get = st.columns(2)
+
+        with col_test:
+            if st.button("🔎 Verificar símbolo", key="btn_test_sim"):
+                with st.spinner("Consultando cotización actual..."):
+                    merc_val = MERCADOS[mercado_hist]
+                    cot = client.get_cotizacion(merc_val, simbolo_hist)
+                if cot:
+                    st.success(f"✅ Símbolo válido | Último precio: {cot.get('ultimoPrecio','—')}")
+                    st.json(cot)
+                else:
+                    st.error("❌ Símbolo no encontrado. Probá sin sufijos (AE38 en vez de AE38D)")
+
+        with col_get:
+            if st.button("📈 Obtener serie", key="btn_hist"):
+                with st.spinner("Descargando serie histórica..."):
+                    df_hist = client.get_serie_historica(
+                        simbolo_hist, str(desde), str(hasta), ajustada,
+                        mercado=MERCADOS[mercado_hist]
+                    )
+                if df_hist.empty:
+                    st.warning("Sin datos. Usá **Verificar símbolo** primero para confirmar que existe.")
+                else:
+                    st.session_state["iol_hist_df"]      = df_hist
+                    st.session_state["iol_hist_simbolo"] = simbolo_hist
+                    precio_col = "ultimoPrecio" if "ultimoPrecio" in df_hist.columns else df_hist.columns[0]
+                    st.line_chart(df_hist[precio_col])
+                    st.dataframe(df_hist, use_container_width=True)
+                    csv = df_hist.to_csv(sep=";").encode("utf-8")
+                    st.download_button("📥 CSV", csv,
+                                       file_name=f"hist_{simbolo_hist}.csv", mime="text/csv")
 
     # ── Tab 4: MEP ───────────────────────────────────────────────────────
     with tabs[3]:
