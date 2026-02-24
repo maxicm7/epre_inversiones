@@ -173,81 +173,103 @@ class IOLClient:
         """
         GET /api/v2/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/
                 {fechaDesde}/{fechaHasta}/{ajustada}
-
-        Parámetros:
-          ajustada : "ajustada" | "sinAjustar"
-          fechas   : "YYYY-MM-DD"
+        Intenta múltiples formatos de fecha hasta obtener datos.
         """
-        # IOL acepta fechas en formato YYYY-MM-DD en la URL
-        endpoint = (f"/{mercado}/Titulos/{simbolo}/Cotizacion"
-                    f"/seriehistorica/{fecha_desde}/{fecha_hasta}/{ajustada}")
-
-        # Llamada raw para ver respuesta completa en caso de error
         if not self._ensure_token():
             return pd.DataFrame()
 
-        url = f"{API_URL}{endpoint}"
+        # Convertir fechas al formato dd-MM-yyyy que acepta IOL
         try:
-            resp = requests.get(url, headers=self.headers, timeout=20)
+            from datetime import datetime as dt
+            d_desde = dt.strptime(fecha_desde, "%Y-%m-%d")
+            d_hasta = dt.strptime(fecha_hasta, "%Y-%m-%d")
+        except Exception:
+            d_desde = d_hasta = None
 
-            # Debug visible en la app
-            with st.expander("🔍 Debug – Serie histórica", expanded=False):
-                st.code(f"URL: {url}\nStatus: {resp.status_code}")
-                if resp.status_code != 200:
-                    st.error(f"Respuesta IOL: {resp.text[:500]}")
+        # IOL acepta dd-MM-yyyy en la URL de seriehistorica
+        formatos = []
+        if d_desde and d_hasta:
+            formatos = [
+                (d_desde.strftime("%d-%m-%Y"), d_hasta.strftime("%d-%m-%Y")),  # dd-MM-yyyy ← más común
+                (fecha_desde, fecha_hasta),                                      # yyyy-MM-dd
+                (d_desde.strftime("%Y-%m-%d"), d_hasta.strftime("%Y-%m-%d")),   # yyyy-MM-dd explícito
+            ]
+        else:
+            formatos = [(fecha_desde, fecha_hasta)]
 
-            if resp.status_code == 401:
-                self._token = None
-                if not self.authenticate():
-                    return pd.DataFrame()
+        debug_lines = []
+        for fmt_desde, fmt_hasta in formatos:
+            endpoint = (f"/{mercado}/Titulos/{simbolo}/Cotizacion"
+                        f"/seriehistorica/{fmt_desde}/{fmt_hasta}/{ajustada}")
+            url = f"{API_URL}{endpoint}"
+            try:
                 resp = requests.get(url, headers=self.headers, timeout=20)
+                debug_lines.append(f"[{resp.status_code}] {url}")
 
-            if resp.status_code != 200:
-                st.error(f"IOL respondió {resp.status_code}: {resp.text[:300]}")
-                return pd.DataFrame()
+                if resp.status_code == 401:
+                    self._token = None
+                    if not self.authenticate():
+                        continue
+                    resp = requests.get(url, headers=self.headers, timeout=20)
 
-            data = resp.json()
+                if resp.status_code != 200:
+                    debug_lines.append(f"  → Error: {resp.text[:200]}")
+                    continue
 
-        except Exception as e:
-            st.error(f"Error de conexión: {e}")
-            return pd.DataFrame()
+                data = resp.json()
+                debug_lines.append(f"  → Tipo respuesta: {type(data).__name__}, "
+                                   f"len: {len(data) if isinstance(data, list) else '—'}")
 
-        if data is None or (isinstance(data, list) and len(data) == 0):
-            return pd.DataFrame()
+                # Normalizar estructura
+                if isinstance(data, dict):
+                    data = data.get("cotizaciones",
+                           data.get("data",
+                           data.get("items",
+                           data.get("historico", []))))
 
-        # La API puede devolver lista directa o dict con clave "cotizaciones"
-        if isinstance(data, dict):
-            data = data.get("cotizaciones", data.get("data", data.get("items", [])))
-            if not isinstance(data, list):
-                data = [data]
+                if not data or (isinstance(data, list) and len(data) == 0):
+                    debug_lines.append("  → Lista vacía, probando siguiente formato...")
+                    continue
 
-        try:
-            df = pd.DataFrame(data)
-            if df.empty:
-                return df
+                # ¡Datos encontrados! Parsear
+                df = pd.DataFrame(data)
+                if df.empty:
+                    continue
 
-            # Detectar columna de fecha (puede variar)
-            fecha_col = next((c for c in df.columns if "fecha" in c.lower()), None)
-            if fecha_col:
-                df[fecha_col] = pd.to_datetime(df[fecha_col], format="ISO8601")
-                df.set_index(fecha_col, inplace=True)
-                df.index = df.index.normalize()
+                debug_lines.append(f"  → Columnas: {list(df.columns)}")
+                debug_lines.append(f"  → {len(df)} filas obtenidas ✅")
 
-            # Detectar columna de precio
-            precio_col = next((c for c in df.columns
-                               if any(p in c.lower() for p in ["ultimo", "cierre", "close", "precio"])), None)
-            if precio_col:
-                df[precio_col] = pd.to_numeric(df[precio_col], errors="coerce")
-                # Renombrar a ultimoPrecio para uniformidad
-                if precio_col != "ultimoPrecio":
-                    df.rename(columns={precio_col: "ultimoPrecio"}, inplace=True)
+                # Fecha
+                fecha_col = next((c for c in df.columns if "fecha" in c.lower()), None)
+                if fecha_col:
+                    df[fecha_col] = pd.to_datetime(df[fecha_col], format="ISO8601")
+                    df.set_index(fecha_col, inplace=True)
+                    df.index = df.index.normalize()
 
-            return df.sort_index()
+                # Precio
+                precio_col = next((c for c in df.columns
+                                   if any(p in c.lower()
+                                          for p in ["ultimo", "cierre", "close", "precio"])), None)
+                if precio_col:
+                    df[precio_col] = pd.to_numeric(df[precio_col], errors="coerce")
+                    if precio_col != "ultimoPrecio":
+                        df.rename(columns={precio_col: "ultimoPrecio"}, inplace=True)
 
-        except Exception as e:
-            st.error(f"Error parseando serie histórica: {e}")
-            st.write("Muestra de datos recibidos:", str(data)[:300])
-            return pd.DataFrame()
+                # Mostrar debug siempre (colapsado)
+                with st.expander("🔍 Debug – Serie histórica"):
+                    st.code("\n".join(debug_lines))
+
+                return df.sort_index()
+
+            except Exception as e:
+                debug_lines.append(f"  → Excepción: {e}")
+                continue
+
+        # Ningún formato funcionó → mostrar debug expandido para diagnóstico
+        with st.expander("🔍 Debug – Serie histórica (sin datos)", expanded=True):
+            st.code("\n".join(debug_lines))
+
+        return pd.DataFrame()
 
     # ── 6. FCI – todos los fondos ─────────────────────────────────────────
     def get_fci_todos(self) -> pd.DataFrame:
