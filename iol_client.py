@@ -138,125 +138,150 @@ class IOLClient:
         return self._get(f"/{mercado}/Titulos/{simbolo}/CotizacionDetalle")
 
     def get_serie_historica(self, simbolo: str, fecha_desde: str, fecha_hasta: str,
-                             ajustada: str = "ajustada",
-                             mercado: str = "bCBA") -> pd.DataFrame:
-        """
-        GET /api/v2/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/{fechaDesde}/{fechaHasta}/{ajustada}
-        Formato: YYYY-MM-DD (ISO 8601)
-        """
-        if not self._ensure_token():
-            return pd.DataFrame()
+                         ajustada: str = "ajustada",
+                         mercado: str = "bCBA") -> pd.DataFrame:
+    """
+    GET /api/v2/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/{fechaDesde}/{fechaHasta}/{ajustada}
+    Formato de fecha: YYYY-MM-DD (ISO 8601) ✅
+    """
+    if not self._ensure_token():
+        return pd.DataFrame()
 
-        if not simbolo or not str(simbolo).strip():
-            st.error("❌ Símbolo vacío")
-            return pd.DataFrame()
+    # Validar parámetros
+    if not simbolo or not str(simbolo).strip():
+        st.error("❌ Símbolo vacío")
+        return pd.DataFrame()
+    
+    simbolo = str(simbolo).strip().upper()
+    mercado = str(mercado).strip()
+
+    # ✅ Validar y convertir fechas
+    try:
+        d_desde = datetime.strptime(fecha_desde, "%Y-%m-%d")
+        d_hasta = datetime.strptime(fecha_hasta, "%Y-%m-%d")
         
-        simbolo = str(simbolo).strip().upper()
-        mercado = str(mercado).strip()
-
-        try:
-            d_desde = datetime.strptime(fecha_desde, "%Y-%m-%d")
-            d_hasta = datetime.strptime(fecha_hasta, "%Y-%m-%d")
+        if d_desde > d_hasta:
+            st.error("❌ 'Desde' no puede ser mayor que 'Hasta'")
+            return pd.DataFrame()
             
-            if d_desde > d_hasta:
-                st.error("❌ 'Desde' no puede ser mayor que 'Hasta'")
-                return pd.DataFrame()
-                
-        except Exception as e:
-            st.error(f"❌ Error en fechas: {e}")
-            return pd.DataFrame()
+    except Exception as e:
+        st.error(f"❌ Error en fechas: {e}")
+        return pd.DataFrame()
 
-        # ✅ Formato ISO 8601
-        fmt_desde = d_desde.strftime("%Y-%m-%d")
-        fmt_hasta = d_hasta.strftime("%Y-%m-%d")
+    # ✅ FORMATO ISO 8601: YYYY-MM-DD (esto es lo que corrige el error 400)
+    fmt_desde = d_desde.strftime("%Y-%m-%d")  # ← 2025-01-01
+    fmt_hasta = d_hasta.strftime("%Y-%m-%d")  # ← 2026-02-24
 
-        endpoint = f"/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/{fmt_desde}/{fmt_hasta}/{ajustada}"
-        url = f"{API_URL}{endpoint}"
-        
-        debug_lines = [
-            f"🔍 Parámetros:",
-            f"   Símbolo: {simbolo}",
-            f"   Mercado: {mercado}",
-            f"   Desde: {fmt_desde}",
-            f"   Hasta: {fmt_hasta}",
-            f"",
-            f"📡 URL: {url}",
-            f""
-        ]
+    # ✅ Construir endpoint EXACTO como en la documentación oficial
+    endpoint = f"/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/{fmt_desde}/{fmt_hasta}/{ajustada}"
+    url = f"{API_URL}{endpoint}"
+    
+    debug_lines = [
+        f"🔍 Parámetros:",
+        f"   Símbolo: {simbolo}",
+        f"   Mercado: {mercado}",
+        f"   Desde: {fmt_desde} (ISO 8601)",
+        f"   Hasta: {fmt_hasta} (ISO 8601)",
+        f"   Ajustada: {ajustada}",
+        f"",
+        f"📡 URL:",
+        f"   {url}",
+        f""
+    ]
 
-        try:
-            resp = requests.get(url, headers=self.headers, timeout=20)
-            debug_lines.append(f"Status: {resp.status_code}")
+    try:
+        debug_lines.append("🔄 Enviando petición...")
+        resp = requests.get(url, headers=self.headers, timeout=20)
+        debug_lines.append(f"   Status: {resp.status_code}")
 
-            if resp.status_code == 401:
-                self._token = None
-                if self.authenticate():
-                    resp = requests.get(url, headers=self.headers, timeout=20)
-                    debug_lines.append(f"Reintentó: {resp.status_code}")
+        # Reintentar si token expiró
+        if resp.status_code == 401:
+            debug_lines.append("   ⚠️ Token expirado, reautenticando...")
+            self._token = None
+            if self.authenticate():
+                resp = requests.get(url, headers=self.headers, timeout=20)
+                debug_lines.append(f"   Reintentó: {resp.status_code}")
 
-            if resp.status_code == 400:
-                debug_lines.append(f"❌ Error 400: Request inválido")
-                try:
-                    error_json = resp.json()
-                    debug_lines.append(f"Detalle: {error_json}")
-                except:
-                    debug_lines.append(f"Response: {resp.text[:300]}")
-                
-                with st.expander("🔍 Debug", expanded=True):
-                    st.code("\n".join(debug_lines))
-                
-                st.warning("⚠️ Verificá: formato de fecha (AAAA-MM-DD), símbolo válido, rango < 2 años")
-                return pd.DataFrame()
-                
-            elif resp.status_code != 200:
-                debug_lines.append(f"❌ Error {resp.status_code}")
-                with st.expander("🔍 Debug", expanded=True):
-                    st.code("\n".join(debug_lines))
-                return pd.DataFrame()
-
-            data = resp.json()
-            debug_lines.append(f"→ Tipo: {type(data).__name__}")
-
-            if isinstance(data, dict):
-                data = data.get("cotizaciones",
-                       data.get("data",
-                       data.get("items",
-                       data.get("historico", []))))
-
-            if not data:
-                debug_lines.append("⚠️ Respuesta vacía")
-                with st.expander("🔍 Debug", expanded=True):
-                    st.code("\n".join(debug_lines))
-                return pd.DataFrame()
-
-            df = pd.DataFrame(data)
-            debug_lines.append(f"→ {len(df)} filas obtenidas ✅")
-
-            # Procesar fecha
-            fecha_col = next((c for c in df.columns if "fecha" in c.lower()), None)
-            if fecha_col:
-                df[fecha_col] = pd.to_datetime(df[fecha_col])
-                df.set_index(fecha_col, inplace=True)
-
-            # Procesar precio
-            precio_col = next((c for c in df.columns
-                               if any(p in c.lower() for p in ["ultimo", "cierre", "close", "precio"])), None)
-            if precio_col:
-                df[precio_col] = pd.to_numeric(df[precio_col], errors="coerce")
-                if precio_col != "ultimoPrecio":
-                    df.rename(columns={precio_col: "ultimoPrecio"}, inplace=True)
-
-            with st.expander("🔍 Debug"):
+        if resp.status_code == 400:
+            debug_lines.append(f"   ❌ Error 400: Request inválido")
+            try:
+                error_json = resp.json()
+                debug_lines.append(f"   Detalle: {error_json}")
+            except:
+                debug_lines.append(f"   Response: {resp.text[:300]}")
+            
+            with st.expander("🔍 Debug – Serie histórica", expanded=True):
                 st.code("\n".join(debug_lines))
-
-            return df.sort_index()
-
-        except Exception as e:
-            debug_lines.append(f"❌ Excepción: {e}")
+            
+            st.warning("""
+            **Causas comunes de error 400:**
+            - 📅 Fechas en formato incorrecto (debe ser AAAA-MM-DD)
+            - 📏 Rango de fechas muy amplio (>2 años)
+            - 🔤 Símbolo no existe en ese mercado
+            - 🚫 Símbolo sin datos históricos en ese período
+            """)
+            return pd.DataFrame()
+            
+        elif resp.status_code != 200:
+            debug_lines.append(f"   ❌ Error HTTP {resp.status_code}")
+            debug_lines.append(f"   Response: {resp.text[:300]}")
             with st.expander("🔍 Debug", expanded=True):
                 st.code("\n".join(debug_lines))
             return pd.DataFrame()
 
+        # ✅ Parsear respuesta exitosa
+        data = resp.json()
+        debug_lines.append(f"   → Tipo: {type(data).__name__}")
+        
+        if isinstance(data, list):
+            debug_lines.append(f"   → Registros: {len(data)}")
+        elif isinstance(data, dict):
+            debug_lines.append(f"   → Claves: {list(data.keys())}")
+
+        # Normalizar estructura
+        if isinstance(data, dict):
+            data = data.get("cotizaciones",
+                   data.get("data",
+                   data.get("items",
+                   data.get("historico", []))))
+
+        if not data or (isinstance(data, list) and len(data) == 0):
+            debug_lines.append("   ⚠️ Respuesta vacía")
+            with st.expander("🔍 Debug", expanded=True):
+                st.code("\n".join(debug_lines))
+            return pd.DataFrame()
+
+        # ✅ Crear DataFrame
+        df = pd.DataFrame(data)
+        debug_lines.append(f"   → Columnas: {list(df.columns)}")
+        debug_lines.append(f"   → {len(df)} filas ✅")
+
+        # Procesar fecha
+        fecha_col = next((c for c in df.columns if "fecha" in c.lower()), None)
+        if fecha_col:
+            df[fecha_col] = pd.to_datetime(df[fecha_col])
+            df.set_index(fecha_col, inplace=True)
+            df.index = df.index.normalize()
+
+        # Procesar precio
+        precio_col = next((c for c in df.columns
+                           if any(p in c.lower() for p in ["ultimo", "cierre", "close", "precio"])), None)
+        if precio_col:
+            df[precio_col] = pd.to_numeric(df[precio_col], errors="coerce")
+            if precio_col != "ultimoPrecio":
+                df.rename(columns={precio_col: "ultimoPrecio"}, inplace=True)
+
+        with st.expander("🔍 Debug – Serie histórica"):
+            st.code("\n".join(debug_lines))
+
+        st.success(f"✅ {len(df)} registros obtenidos para {simbolo}")
+        return df.sort_index()
+
+    except Exception as e:
+        debug_lines.append(f"   ❌ Excepción: {type(e).__name__}: {e}")
+        with st.expander("🔍 Debug", expanded=True):
+            st.code("\n".join(debug_lines))
+        return pd.DataFrame()
     def get_fci_todos(self) -> pd.DataFrame:
         data = self._get("/Titulos/FCI")
         return pd.DataFrame(data) if isinstance(data, list) else pd.DataFrame()
