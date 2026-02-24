@@ -175,104 +175,146 @@ class IOLClient:
         """
         GET /api/v2/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/
                 {fechaDesde}/{fechaHasta}/{ajustada}
-        Intenta múltiples formatos de fecha hasta obtener datos.
         """
         if not self._ensure_token():
             return pd.DataFrame()
 
-        # ✅ Fixed: Convertir fechas correctamente
+        # ✅ Validar parámetros
+        debug_lines = ["🔍 Validación de parámetros:"]
+        
+        if not simbolo or not str(simbolo).strip():
+            st.error("❌ El símbolo está vacío")
+            return pd.DataFrame()
+        
+        if not mercado or not str(mercado).strip():
+            st.error("❌ El mercado está vacío")
+            return pd.DataFrame()
+        
+        simbolo = str(simbolo).strip().upper()
+        mercado = str(mercado).strip()
+        
+        debug_lines.append(f"   Símbolo: '{simbolo}'")
+        debug_lines.append(f"   Mercado: '{mercado}'")
+        debug_lines.append(f"   Desde: '{fecha_desde}'")
+        debug_lines.append(f"   Hasta: '{fecha_hasta}'")
+        debug_lines.append(f"   Ajuste: '{ajustada}'")
+        debug_lines.append("")
+
+        # ✅ Convertir fechas correctamente
         try:
             d_desde = datetime.strptime(fecha_desde, "%Y-%m-%d")
             d_hasta = datetime.strptime(fecha_hasta, "%Y-%m-%d")
-        except Exception:
-            st.error("❌ Formato de fecha inválido. Use AAAA-MM-DD")
+            
+            if d_desde > d_hasta:
+                st.error("❌ La fecha 'Desde' no puede ser mayor que 'Hasta'")
+                return pd.DataFrame()
+                
+        except Exception as e:
+            st.error(f"❌ Error en fechas: {e}")
             return pd.DataFrame()
 
-        # ✅ Fixed: IOL acepta dd-MM-yyyy en la URL de seriehistorica
-        formatos = [
-            (d_desde.strftime("%d-%m-%Y"), d_hasta.strftime("%d-%m-%Y")),  # dd-MM-yyyy (formato IOL)
-        ]
+        # ✅ Formato que usa IOL: dd-MM-yyyy
+        fmt_desde = d_desde.strftime("%d-%m-%Y")
+        fmt_hasta = d_hasta.strftime("%d-%m-%Y")
 
-        debug_lines = []
-        for fmt_desde, fmt_hasta in formatos:
-            # ✅ Fixed: Construcción correcta del endpoint
-            endpoint = f"/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/{fmt_desde}/{fmt_hasta}/{ajustada}"
-            url = f"{API_URL}{endpoint}"
-            
-            debug_lines.append(f"🔍 URL: {url}")
-            
-            try:
-                resp = requests.get(url, headers=self.headers, timeout=20)
-                debug_lines.append(f"   Status: {resp.status_code}")
+        # ✅ Construir endpoint completo
+        endpoint = f"/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/{fmt_desde}/{fmt_hasta}/{ajustada}"
+        url = f"{API_URL}{endpoint}"
+        
+        debug_lines.append(f"📡 URL construida:")
+        debug_lines.append(f"   {url}")
+        debug_lines.append(f"   Token: {'✓' if self._token else '✗'}")
+        debug_lines.append("")
 
-                if resp.status_code == 401:
-                    self._token = None
-                    if not self.authenticate():
-                        continue
+        try:
+            debug_lines.append(f"🔄 Enviando petición...")
+            resp = requests.get(url, headers=self.headers, timeout=20)
+            debug_lines.append(f"   Status: {resp.status_code}")
+
+            if resp.status_code == 401:
+                debug_lines.append("   ⚠️ Token expirado, reintentando...")
+                self._token = None
+                if self.authenticate():
                     resp = requests.get(url, headers=self.headers, timeout=20)
+                    debug_lines.append(f"   Reintentó status: {resp.status_code}")
+                else:
+                    debug_lines.append("   ❌ No se pudo renovar el token")
+                    with st.expander("🔍 Debug – Serie histórica (sin datos)", expanded=True):
+                        st.code("\n".join(debug_lines))
+                    return pd.DataFrame()
 
-                if resp.status_code == 400:
-                    debug_lines.append(f"   ❌ Error 400: Request inválido. Verifique símbolo y fechas.")
-                    continue
-                elif resp.status_code != 200:
-                    debug_lines.append(f"   ❌ Error: {resp.text[:200]}")
-                    continue
-
-                data = resp.json()
-                debug_lines.append(f"   → Tipo respuesta: {type(data).__name__}, "
-                                   f"len: {len(data) if isinstance(data, list) else '—'}")
-
-                # Normalizar estructura
-                if isinstance(data, dict):
-                    data = data.get("cotizaciones",
-                           data.get("data",
-                           data.get("items",
-                           data.get("historico", []))))
-
-                if not data or (isinstance(data, list) and len(data) == 0):
-                    debug_lines.append("   ⚠️ Lista vacía")
-                    continue
-
-                # ¡Datos encontrados! Parsear
-                df = pd.DataFrame(data)
-                if df.empty:
-                    continue
-
-                debug_lines.append(f"   → Columnas: {list(df.columns)}")
-                debug_lines.append(f"   → {len(df)} filas obtenidas ✅")
-
-                # Fecha
-                fecha_col = next((c for c in df.columns if "fecha" in c.lower()), None)
-                if fecha_col:
-                    df[fecha_col] = pd.to_datetime(df[fecha_col], format="ISO8601")
-                    df.set_index(fecha_col, inplace=True)
-                    df.index = df.index.normalize()
-
-                # Precio
-                precio_col = next((c for c in df.columns
-                                   if any(p in c.lower()
-                                          for p in ["ultimo", "cierre", "close", "precio"])), None)
-                if precio_col:
-                    df[precio_col] = pd.to_numeric(df[precio_col], errors="coerce")
-                    if precio_col != "ultimoPrecio":
-                        df.rename(columns={precio_col: "ultimoPrecio"}, inplace=True)
-
-                # Mostrar debug siempre (colapsado)
-                with st.expander("🔍 Debug – Serie histórica"):
+            if resp.status_code == 400:
+                debug_lines.append(f"   ❌ Error 400: Request inválido")
+                try:
+                    error_data = resp.json()
+                    debug_lines.append(f"   Detalle: {error_data}")
+                except:
+                    debug_lines.append(f"   Response: {resp.text[:200]}")
+                
+                with st.expander("🔍 Debug – Serie histórica (sin datos)", expanded=True):
                     st.code("\n".join(debug_lines))
+                return pd.DataFrame()
+                
+            elif resp.status_code != 200:
+                debug_lines.append(f"   ❌ Error HTTP {resp.status_code}")
+                debug_lines.append(f"   Response: {resp.text[:200]}")
+                with st.expander("🔍 Debug – Serie histórica (sin datos)", expanded=True):
+                    st.code("\n".join(debug_lines))
+                return pd.DataFrame()
 
-                return df.sort_index()
+            # ✅ Parsear respuesta
+            data = resp.json()
+            debug_lines.append(f"   → Tipo respuesta: {type(data).__name__}")
+            
+            if isinstance(data, list):
+                debug_lines.append(f"   → Cantidad de registros: {len(data)}")
+            elif isinstance(data, dict):
+                debug_lines.append(f"   → Claves: {list(data.keys())}")
 
-            except Exception as e:
-                debug_lines.append(f"   → Excepción: {e}")
-                continue
+            # Normalizar estructura
+            if isinstance(data, dict):
+                data = data.get("cotizaciones",
+                       data.get("data",
+                       data.get("items",
+                       data.get("historico", []))))
 
-        # Ningún formato funcionó → mostrar debug expandido para diagnóstico
-        with st.expander("🔍 Debug – Serie histórica (sin datos)", expanded=True):
-            st.code("\n".join(debug_lines))
+            if not data or (isinstance(data, list) and len(data) == 0):
+                debug_lines.append("   ⚠️ Respuesta vacía")
+                with st.expander("🔍 Debug – Serie histórica (sin datos)", expanded=True):
+                    st.code("\n".join(debug_lines))
+                return pd.DataFrame()
 
-        st.warning("⚠️ No se encontraron datos. Verifique:\n- El símbolo es correcto (use 'Verificar símbolo')\n- El mercado seleccionado\n- El rango de fechas")
-        return pd.DataFrame()
+            # ✅ Crear DataFrame
+            df = pd.DataFrame(data)
+            debug_lines.append(f"   → Columnas: {list(df.columns)}")
+            debug_lines.append(f"   → {len(df)} filas obtenidas ✅")
+
+            # Procesar fecha
+            fecha_col = next((c for c in df.columns if "fecha" in c.lower()), None)
+            if fecha_col:
+                df[fecha_col] = pd.to_datetime(df[fecha_col], format="ISO8601")
+                df.set_index(fecha_col, inplace=True)
+                df.index = df.index.normalize()
+
+            # Procesar precio
+            precio_col = next((c for c in df.columns
+                               if any(p in c.lower()
+                                      for p in ["ultimo", "cierre", "close", "precio"])), None)
+            if precio_col:
+                df[precio_col] = pd.to_numeric(df[precio_col], errors="coerce")
+                if precio_col != "ultimoPrecio":
+                    df.rename(columns={precio_col: "ultimoPrecio"}, inplace=True)
+
+            with st.expander("🔍 Debug – Serie histórica"):
+                st.code("\n".join(debug_lines))
+
+            return df.sort_index()
+
+        except Exception as e:
+            debug_lines.append(f"   ❌ Excepción: {type(e).__name__}: {e}")
+            with st.expander("🔍 Debug – Serie histórica (sin datos)", expanded=True):
+                st.code("\n".join(debug_lines))
+            return pd.DataFrame()
 
     # ── 6. FCI – todos los fondos ─────────────────────────────────────────
     def get_fci_todos(self) -> pd.DataFrame:
@@ -541,22 +583,31 @@ def page_iol_explorer():
 
         with col_get:
             if st.button("📈 Obtener serie", key="btn_hist"):
-                with st.spinner("Descargando serie histórica..."):
-                    df_hist = client.get_serie_historica(
-                        simbolo_hist, str(desde), str(hasta), ajustada,
-                        mercado=MERCADOS[mercado_hist]
-                    )
-                if df_hist.empty:
-                    st.warning("Sin datos. Usá **Verificar símbolo** primero para confirmar que existe.")
+                # ✅ Validar antes de llamar
+                if not simbolo_hist.strip():
+                    st.error("❌ Ingrese un símbolo válido")
+                elif desde >= hasta:
+                    st.error("❌ La fecha 'Desde' debe ser menor que 'Hasta'")
                 else:
-                    st.session_state["iol_hist_df"]      = df_hist
-                    st.session_state["iol_hist_simbolo"] = simbolo_hist
-                    precio_col = "ultimoPrecio" if "ultimoPrecio" in df_hist.columns else df_hist.columns[0]
-                    st.line_chart(df_hist[precio_col])
-                    st.dataframe(df_hist, use_container_width=True)
-                    csv = df_hist.to_csv(sep=";").encode("utf-8")
-                    st.download_button("📥 CSV", csv,
-                                       file_name=f"hist_{simbolo_hist}.csv", mime="text/csv")
+                    with st.spinner("Descargando serie histórica..."):
+                        df_hist = client.get_serie_historica(
+                            simbolo_hist.strip().upper(),  # ✅ Mayúsculas y sin espacios
+                            str(desde), 
+                            str(hasta), 
+                            ajustada,
+                            mercado=MERCADOS[mercado_hist]
+                        )
+                    if df_hist.empty:
+                        st.warning("Sin datos. Usá **Verificar símbolo** primero para confirmar que existe.")
+                    else:
+                        st.session_state["iol_hist_df"]      = df_hist
+                        st.session_state["iol_hist_simbolo"] = simbolo_hist
+                        precio_col = "ultimoPrecio" if "ultimoPrecio" in df_hist.columns else df_hist.columns[0]
+                        st.line_chart(df_hist[precio_col])
+                        st.dataframe(df_hist, use_container_width=True)
+                        csv = df_hist.to_csv(sep=";").encode("utf-8")
+                        st.download_button("📥 CSV", csv,
+                                           file_name=f"hist_{simbolo_hist}.csv", mime="text/csv")
 
     # ── Tab 4: MEP ───────────────────────────────────────────────────────
     with tabs[3]:
@@ -591,7 +642,7 @@ def page_iol_explorer():
 
             if selected_simbolos:
                 # Pesos
-                st.markdown("**Asigná pesos (deben sumar 1.0 junto con el portafolio existente)**")
+                st.markdown("**Asigná pesos (deben sumar 1.0)**")
                 peso_total = 0.0
                 pesos_nuevos = {}
                 cols = st.columns(min(len(selected_simbolos), 4))
@@ -617,12 +668,13 @@ def page_iol_explorer():
 
                 if st.button("💾 Guardar en portafolio", key="btn_save_port"):
                     if abs(peso_total - 1.0) > 0.01:
-                        st.error("Los pesos deben sumar 1.0")
+                        st.error("⚠️ Los pesos deben sumar 1.0")
                     else:
                         nombre_final = nuevo_nombre if dest_port == "➕ Nuevo portafolio" else dest_port
                         if not nombre_final:
-                            st.error("Ingresá un nombre para el portafolio.")
+                            st.error("⚠️ Ingresá un nombre para el portafolio.")
                         else:
+                            # ✅ Preparar datos del portafolio
                             if nombre_final in portfolios:
                                 # Agregar a existente (reemplaza tickers duplicados)
                                 existing_tickers = portfolios[nombre_final]["tickers"]
@@ -641,12 +693,21 @@ def page_iol_explorer():
                                     "fuente":  "IOL"
                                 }
 
-                            # Guardar
-                            from app import save_portfolios_to_file
-                            ok, msg = save_portfolios_to_file(portfolios)
-                            if ok:
-                                st.session_state.portfolios = portfolios
-                                st.success(f"✅ Portafolio **{nombre_final}** guardado con {len(pesos_nuevos)} activos IOL.")
-                                st.balloons()
-                            else:
-                                st.error(f"Error al guardar: {msg}")
+                            # ✅ ACTUALIZAR SESSION STATE
+                            st.session_state.portfolios = portfolios
+
+                            # ✅ IMPORT CONDICIONAL (evita ModuleNotFoundError)
+                            try:
+                                from app import save_portfolios_to_file
+                                ok, msg = save_portfolios_to_file(portfolios)
+                                if ok:
+                                    st.success(f"✅ Portafolio **{nombre_final}** guardado con {len(pesos_nuevos)} activos IOL.")
+                                    st.balloons()
+                                else:
+                                    st.warning(f"⚠️ Guardado en sesión, pero error al guardar en archivo: {msg}")
+                            except ImportError:
+                                # Si no encuentra app.py, solo guarda en sesión
+                                st.success(f"✅ Portafolio **{nombre_final}** guardado en sesión temporal.")
+                                st.info("📝 Los datos se perderán al cerrar la app. Para guardado permanente, aseguráte que app.py esté disponible.")
+                            except Exception as e:
+                                st.warning(f"⚠️ Guardado en sesión. Error al guardar en archivo: {e}")
