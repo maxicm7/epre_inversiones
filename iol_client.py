@@ -267,13 +267,9 @@ class IOLClient:
                 st.code("\n".join(debug_lines))
 
             st.success(f"✅ {len(df)} días de registro procesados para {simbolo}")
-            return df.sort_index())
+            return df.sort_index()
 
-        except Exception as e:
-            debug_lines.append(f"   ❌ Excepción: {type(e).__name__}: {e}")
-            with st.expander("🔍 Debug", expanded=True):
-                st.code("\n".join(debug_lines))
-            return pd.DataFrame()
+            
 
     def get_fci_todos(self) -> pd.DataFrame:
         data = self._get("/Titulos/FCI")
