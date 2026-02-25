@@ -52,23 +52,76 @@ def gemini_generate(prompt: str, api_key: str, model: str = DEFAULT_MODEL) -> st
 # ═══════════════════════════════════════════════════════════════════════════
 
 def load_prices(tickers: list[str], start: str, end: str) -> pd.DataFrame:
-    """Descarga precios de cierre ajustados desde Yahoo Finance."""
+    """Descarga precios intentando primero con IOL API y, si no, usa Yahoo Finance."""
     if not tickers:
         return pd.DataFrame()
+
+    all_prices = {}
+    yf_tickers = []
+    
+    # 1. Intentar obtener el cliente autenticado de IOL
+    client = None
     try:
-        raw = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)
-        if raw.empty:
-            return pd.DataFrame()
-        if "Close" in raw.columns:
-            prices = raw["Close"] if isinstance(raw["Close"], pd.DataFrame) else raw["Close"].to_frame()
-        else:
-            prices = raw if isinstance(raw, pd.DataFrame) else raw.to_frame()
-        prices.columns = [str(c) for c in prices.columns]
-        prices.dropna(how="all", inplace=True)
-        return prices
-    except Exception as e:
-        st.error(f"Error al descargar precios: {e}")
+        from iol_client import get_iol_client
+        client = get_iol_client()
+    except ImportError:
+        pass
+
+    # 2. Iterar por tickers y buscar en IOL
+    for ticker in tickers:
+        fetched = False
+        if client:
+            # Limpiamos el ticker por si el usuario le puso sufijos (ej: AL30.BA -> AL30)
+            simbolo_iol = ticker.split(".")[0].upper()
+            try:
+                # Usamos ajustada="ajustada", que ya tiene el fallback a sinAjustar por dentro
+                df_hist = client.get_serie_historica(simbolo_iol, start, end, ajustada="ajustada", mercado="bCBA")
+                if not df_hist.empty and "ultimoPrecio" in df_hist.columns:
+                    s = df_hist["ultimoPrecio"].rename(ticker)
+                    # Remover zona horaria para compatibilidad estricta
+                    if s.index.tz is not None:
+                        s.index = s.index.tz_localize(None)
+                    all_prices[ticker] = s
+                    fetched = True
+            except Exception:
+                pass
+        
+        # Si no se encontró en IOL, lo mandamos a la lista de Yahoo Finance
+        if not fetched:
+            yf_tickers.append(ticker)
+
+    # 3. Fallback a Yahoo Finance para activos internacionales o si IOL falla
+    if yf_tickers:
+        try:
+            raw = yf.download(yf_tickers, start=start, end=end, auto_adjust=True, progress=False)
+            if not raw.empty:
+                if "Close" in raw.columns:
+                    prices = raw["Close"]
+                else:
+                    prices = raw
+                    
+                if isinstance(prices, pd.Series):
+                    prices = prices.to_frame(name=yf_tickers[0])
+                
+                # Remover zona horaria para compatibilidad estricta
+                if prices.index.tz is not None:
+                    prices.index = prices.index.tz_localize(None)
+                
+                for col in prices.columns:
+                    all_prices[str(col)] = prices[col]
+        except Exception as e:
+            st.error(f"Error al descargar desde Yahoo Finance: {e}")
+
+    # 4. Consolidar el DataFrame
+    if not all_prices:
         return pd.DataFrame()
+
+    prices_df = pd.concat(all_prices.values(), axis=1)
+    prices_df.columns = list(all_prices.keys())
+    prices_df.dropna(how="all", inplace=True)
+    prices_df.ffill(inplace=True) # Rellena huecos por diferencias de feriados
+    
+    return prices_df
 
 
 def adf_test(series: pd.Series) -> dict:
@@ -403,13 +456,13 @@ def page_forecast():
 
         c1, c2 = st.columns(2)
         with c1:
-            target_ticker = st.text_input("🎯 Activo a pronosticar (ticker Yahoo)", value="AL30.BA",
-                                          help="Ej: AL30.BA, GD30.BA, GGAL.BA, BMA, AAPL")
+            target_ticker = st.text_input("🎯 Activo a pronosticar (Ticker IOL o Yahoo)", value="AL30",
+                                          help="Ej: AL30, GD30, GGAL, BMA, AAPL")
         with c2:
             exog_input = st.text_input(
                 "📎 Variables exógenas (tickers separados por coma)",
-                value="^MERV, GGAL.BA",
-                help="Ej: ^MERV, GGAL.BA, DXY=F – dejar vacío para modelo univariado"
+                value="GGAL",
+                help="Ej: GGAL, DXY=F – dejar vacío para modelo univariado"
             )
 
         c3, c4, c5 = st.columns(3)
@@ -457,16 +510,15 @@ def page_forecast():
     exog_tickers = [t.strip().upper() for t in exog_input.split(",") if t.strip()] if exog_input.strip() else []
     all_tickers  = list(dict.fromkeys([target_ticker.upper()] + exog_tickers))  # sin duplicados
 
-    with st.spinner("📡 Descargando datos..."):
+    with st.spinner("📡 Descargando datos desde IOL y Yahoo Finance..."):
         prices = load_prices(all_tickers, str(start_date), str(end_date))
 
     if prices.empty:
-        st.error("No se pudieron descargar datos. Verifica los tickers.")
+        st.error("No se pudieron descargar datos. Verifica que estés logueado en IOL y que los tickers sean correctos.")
         return
 
     target_col = target_ticker.upper()
     if target_col not in prices.columns:
-        # Puede que yfinance cambie el nombre
         available = prices.columns.tolist()
         st.warning(f"Ticker '{target_col}' no encontrado. Columnas disponibles: {available}")
         target_col = available[0]
