@@ -1,4 +1,4 @@
-"""
+           """
 iol_client.py
 ─────────────────────────────────────────────────────────────────
 Cliente para la API oficial de InvertirOnline (IOL) v2.
@@ -7,6 +7,7 @@ Cliente para la API oficial de InvertirOnline (IOL) v2.
 import requests
 import pandas as pd
 import streamlit as st
+import json
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -169,7 +170,7 @@ class IOLClient:
         endpoint = f"/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/{fmt_desde}/{fmt_hasta}/{ajustada}"
         url = f"{API_URL}{endpoint}"
         
-        debug_lines = [
+        debug_lines =[
             f"🔍 Parámetros:",
             f"   Símbolo: {simbolo}",
             f"   Mercado: {mercado}",
@@ -213,10 +214,10 @@ class IOLClient:
             # Función para extraer la lista de cotizaciones
             def extract_items(d):
                 if isinstance(d, dict):
-                    return d.get("cotizaciones", d.get("data", d.get("items", d.get("historico", []))))
+                    return d.get("cotizaciones", d.get("data", d.get("items", d.get("historico",[]))))
                 elif isinstance(d, list):
                     return d
-                return []
+                return[]
             
             items = extract_items(data)
 
@@ -251,7 +252,7 @@ class IOLClient:
 
             # Procesar precio
             precio_col = next((c for c in df.columns
-                               if any(p in c.lower() for p in ["ultimo", "cierre", "close", "precio"])), None)
+                               if any(p in c.lower() for p in["ultimo", "cierre", "close", "precio"])), None)
             if precio_col:
                 df[precio_col] = pd.to_numeric(df[precio_col], errors="coerce")
                 if precio_col != "ultimoPrecio":
@@ -278,11 +279,11 @@ class IOLClient:
 
     def get_fci_tipos(self) -> list:
         data = self._get("/Titulos/FCI/TipoFondos")
-        return data if isinstance(data, list) else []
+        return data if isinstance(data, list) else[]
 
     def get_fci_administradoras(self) -> list:
         data = self._get("/Titulos/FCI/Administradoras")
-        return data if isinstance(data, list) else []
+        return data if isinstance(data, list) else[]
 
     def get_fci_por_admin_tipo(self, administradora: str, tipo_fondo: str) -> pd.DataFrame:
         data = self._get(f"/Titulos/FCI/Administradoras/{administradora}/TipoFondos/{tipo_fondo}")
@@ -518,15 +519,11 @@ def page_iol_explorer():
 
                             st.session_state.portfolios = portfolios
 
+                            # 🛠️ CORRECCIÓN AQUÍ: Evitamos importar desde el archivo principal
                             try:
-                                from epre_inversiones import save_portfolios_to_file
-                                ok, msg = save_portfolios_to_file(portfolios)
-                                if ok:
-                                    st.success(f"✅ Portafolio '{nombre}' guardado permanentemente")
-                                    st.balloons()
-                                else:
-                                    st.warning(f"⚠️ Guardado en sesión: {msg}")
-                            except ImportError:
-                                st.success("✅ Guardado en sesión temporal")
+                                with open("portfolios_data1.json", "w", encoding="utf-8") as f:
+                                    json.dump(portfolios, f, indent=4)
+                                st.success(f"✅ Portafolio '{nombre}' guardado permanentemente")
+                                st.balloons()
                             except Exception as e:
-                                st.warning(f"⚠️ Error al guardar: {e}")
+                                st.warning(f"⚠️ Guardado solo en sesión temporal. Error: {e}")
