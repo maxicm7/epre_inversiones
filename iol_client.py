@@ -197,15 +197,19 @@ class IOLClient:
 
             if resp.status_code == 400:
                 debug_lines.append(f"   ❌ Error 400: Request inválido")
-                with st.expander("🔍 Debug – Serie histórica", expanded=True):
+                # Lo ponemos en False para que no moleste visualmente
+                with st.expander("🔍 Debug – Serie histórica", expanded=False):
                     st.code("\n".join(debug_lines))
                 return pd.DataFrame()
                 
             elif resp.status_code != 200:
                 debug_lines.append(f"   ❌ Error HTTP {resp.status_code}")
-                with st.expander("🔍 Debug", expanded=True):
-                    st.code("\n".join(debug_lines))
-                return pd.DataFrame()
+                # SILENCIAMOS EL 404: Si es 404, es un ticker de Yahoo (como DX-Y o AAPL).
+                # No mostramos el error, simplemente devolvemos un DataFrame vacío para que actúe el Fallback.
+                if resp.status_code != 404:
+                    with st.expander("🔍 Debug", expanded=False):
+                        st.code("\n".join(debug_lines))
+                return pd.DataFrame()            
 
             # ✅ Parsear respuesta exitosa
             data = resp.json()
@@ -234,7 +238,7 @@ class IOLClient:
 
             if not items or len(items) == 0:
                 debug_lines.append("   ⚠️ Respuesta vacía (incluso tras posibles reintentos)")
-                with st.expander("🔍 Debug", expanded=True):
+                with st.expander("🔍 Debug", expanded=False):
                     st.code("\n".join(debug_lines))
                 return pd.DataFrame()
 
@@ -271,7 +275,7 @@ class IOLClient:
 
         except Exception as e:
             debug_lines.append(f"   ❌ Excepción: {type(e).__name__}: {e}")
-            with st.expander("🔍 Debug", expanded=True):
+            with st.expander("🔍 Debug", expanded=False):
                 st.code("\n".join(debug_lines))
             return pd.DataFrame()
 
