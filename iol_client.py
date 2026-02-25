@@ -1,4 +1,4 @@
-           """
+"""
 iol_client.py
 ─────────────────────────────────────────────────────────────────
 Cliente para la API oficial de InvertirOnline (IOL) v2.
