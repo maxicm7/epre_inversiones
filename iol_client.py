@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 # ── Base URL ──────────────────────────────────────────────────────────────
-BASE     = "https://api.invertironline.com"  # ✅ Sin espacios
+BASE     = "https://api.invertironline.com"
 AUTH_URL = f"{BASE}/token"
 API_URL  = f"{BASE}/api/v2"
 
@@ -141,13 +141,11 @@ class IOLClient:
                              ajustada: str = "ajustada",
                              mercado: str = "bCBA") -> pd.DataFrame:
         """
-        GET /api/v2/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/{fechaDesde}/{fechaHasta}/{ajustada}
-        Formato de fecha: YYYY-MM-DD (ISO 8601) ✅
+        Obtiene serie histórica, con reintento automático si no hay datos 'ajustados'.
         """
         if not self._ensure_token():
             return pd.DataFrame()
 
-        # Validar parámetros
         if not simbolo or not str(simbolo).strip():
             st.error("❌ Símbolo vacío")
             return pd.DataFrame()
@@ -155,24 +153,19 @@ class IOLClient:
         simbolo = str(simbolo).strip().upper()
         mercado = str(mercado).strip()
 
-        # ✅ Validar y convertir fechas
         try:
             d_desde = datetime.strptime(fecha_desde, "%Y-%m-%d")
             d_hasta = datetime.strptime(fecha_hasta, "%Y-%m-%d")
-            
             if d_desde > d_hasta:
                 st.error("❌ 'Desde' no puede ser mayor que 'Hasta'")
                 return pd.DataFrame()
-                
         except Exception as e:
             st.error(f"❌ Error en fechas: {e}")
             return pd.DataFrame()
 
-        # ✅ FORMATO ISO 8601: YYYY-MM-DD
-        fmt_desde = d_desde.strftime("%Y-%m-%d")  # 2025-01-01
-        fmt_hasta = d_hasta.strftime("%Y-%m-%d")  # 2026-02-24
+        fmt_desde = d_desde.strftime("%Y-%m-%d")
+        fmt_hasta = d_hasta.strftime("%Y-%m-%d")
 
-        # ✅ Construir endpoint
         endpoint = f"/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/{fmt_desde}/{fmt_hasta}/{ajustada}"
         url = f"{API_URL}{endpoint}"
         
@@ -194,7 +187,6 @@ class IOLClient:
             resp = requests.get(url, headers=self.headers, timeout=20)
             debug_lines.append(f"   Status: {resp.status_code}")
 
-            # Reintentar si token expiró
             if resp.status_code == 401:
                 debug_lines.append("   ⚠️ Token expirado, reautenticando...")
                 self._token = None
@@ -204,27 +196,12 @@ class IOLClient:
 
             if resp.status_code == 400:
                 debug_lines.append(f"   ❌ Error 400: Request inválido")
-                try:
-                    error_json = resp.json()
-                    debug_lines.append(f"   Detalle: {error_json}")
-                except:
-                    debug_lines.append(f"   Response: {resp.text[:300]}")
-                
                 with st.expander("🔍 Debug – Serie histórica", expanded=True):
                     st.code("\n".join(debug_lines))
-                
-                st.warning("""
-                **Causas comunes de error 400:**
-                - 📅 Fechas en formato incorrecto (debe ser AAAA-MM-DD)
-                - 📏 Rango de fechas muy amplio (>2 años)
-                - 🔤 Símbolo no existe en ese mercado
-                - 🚫 Símbolo sin datos históricos en ese período
-                """)
                 return pd.DataFrame()
                 
             elif resp.status_code != 200:
                 debug_lines.append(f"   ❌ Error HTTP {resp.status_code}")
-                debug_lines.append(f"   Response: {resp.text[:300]}")
                 with st.expander("🔍 Debug", expanded=True):
                     st.code("\n".join(debug_lines))
                 return pd.DataFrame()
@@ -233,26 +210,35 @@ class IOLClient:
             data = resp.json()
             debug_lines.append(f"   → Tipo: {type(data).__name__}")
             
-            if isinstance(data, list):
-                debug_lines.append(f"   → Registros: {len(data)}")
-            elif isinstance(data, dict):
-                debug_lines.append(f"   → Claves: {list(data.keys())}")
+            # Función para extraer la lista de cotizaciones
+            def extract_items(d):
+                if isinstance(d, dict):
+                    return d.get("cotizaciones", d.get("data", d.get("items", d.get("historico", []))))
+                elif isinstance(d, list):
+                    return d
+                return []
+            
+            items = extract_items(data)
 
-            # Normalizar estructura
-            if isinstance(data, dict):
-                data = data.get("cotizaciones",
-                       data.get("data",
-                       data.get("items",
-                       data.get("historico", []))))
+            # 🛠️ FALLBACK AUTOMÁTICO: Si está vacía y pedimos "ajustada", intentamos "sinAjustar"
+            if (not items or len(items) == 0) and ajustada == "ajustada":
+                debug_lines.append("   ⚠️ Respuesta vacía con 'ajustada'. Reintentando con 'sinAjustar'...")
+                endpoint_sin = f"/{mercado}/Titulos/{simbolo}/Cotizacion/seriehistorica/{fmt_desde}/{fmt_hasta}/sinAjustar"
+                url_sin = f"{API_URL}{endpoint_sin}"
+                resp_sin = requests.get(url_sin, headers=self.headers, timeout=20)
+                
+                if resp_sin.status_code == 200:
+                    items = extract_items(resp_sin.json())
+                    debug_lines.append(f"   🔄 Reintento exitoso, registros obtenidos: {len(items) if items else 0}")
 
-            if not data or (isinstance(data, list) and len(data) == 0):
-                debug_lines.append("   ⚠️ Respuesta vacía")
+            if not items or len(items) == 0:
+                debug_lines.append("   ⚠️ Respuesta vacía (incluso tras posibles reintentos)")
                 with st.expander("🔍 Debug", expanded=True):
                     st.code("\n".join(debug_lines))
                 return pd.DataFrame()
 
             # ✅ Crear DataFrame
-            df = pd.DataFrame(data)
+            df = pd.DataFrame(items)
             debug_lines.append(f"   → Columnas: {list(df.columns)}")
             debug_lines.append(f"   → {len(df)} filas ✅")
 
@@ -532,7 +518,6 @@ def page_iol_explorer():
 
                             st.session_state.portfolios = portfolios
 
-                            # ✅ IMPORT CONDICIONAL - Nombre correcto del módulo
                             try:
                                 from epre_inversiones import save_portfolios_to_file
                                 ok, msg = save_portfolios_to_file(portfolios)
