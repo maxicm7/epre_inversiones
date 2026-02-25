@@ -192,9 +192,22 @@ def fetch_stock_prices_for_portfolio(tickers, start_date, end_date):
     for ticker in tickers:
         fetched = False
         if client:
-            df_hist = client.get_serie_historica(ticker, str(start_date), str(end_date))
+            # Formateamos para estar seguros que no mande Yahoo suffix ".BA" a IOL
+            simbolo_iol = ticker.split(".")[0].upper()
+            
+            # Las fechas de Streamlit vienen como objetos date, IOL necesita string YYYY-MM-DD
+            fmt_start = pd.to_datetime(start_date).strftime("%Y-%m-%d")
+            fmt_end   = pd.to_datetime(end_date).strftime("%Y-%m-%d")
+
+            df_hist = client.get_serie_historica(simbolo_iol, fmt_start, fmt_end)
             if not df_hist.empty and "ultimoPrecio" in df_hist.columns:
-                all_prices[ticker] = df_hist["ultimoPrecio"].rename(ticker)
+                s = df_hist["ultimoPrecio"].rename(ticker)
+                
+                # Quitar zona horaria para compatibilidad total
+                if s.index.tz is not None:
+                    s.index = s.index.tz_localize(None)
+                
+                all_prices[ticker] = s
                 fetched = True
         if not fetched:
             yf_tickers.append(ticker)
@@ -207,6 +220,11 @@ def fetch_stock_prices_for_portfolio(tickers, start_date, end_date):
                 close = raw["Close"] if "Close" in raw.columns else raw
                 if isinstance(close, pd.Series):
                     close = close.to_frame(name=yf_tickers[0])
+                
+                # Quitar zona horaria de Yahoo
+                if close.index.tz is not None:
+                    close.index = close.index.tz_localize(None)
+                    
                 for col in close.columns:
                     all_prices[str(col)] = close[col]
         except Exception as e:
@@ -219,6 +237,7 @@ def fetch_stock_prices_for_portfolio(tickers, start_date, end_date):
     prices = pd.concat(all_prices.values(), axis=1)
     prices.columns = list(all_prices.keys())
     prices.dropna(how="all", inplace=True)
+    prices.ffill(inplace=True) # Rellenar para homogeneizar series
     return prices
 
 
