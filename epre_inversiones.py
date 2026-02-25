@@ -469,7 +469,7 @@ defaults = {
     'hf_model':       "mistralai/Mixtral-8x7B-Instruct-v0.1",
     'hf_temp':        0.5,
     'gemini_api_key': "",
-    'gemini_model':   "gemini-1.5-flash",
+    'gemini_model':   "gemini-2.5-flash",
     'iol_username':   "",
     'iol_password':   "",
 }
@@ -515,7 +515,7 @@ with st.sidebar.expander("🔮 Google Gemini", expanded=False):
                         value=st.session_state.get('gemini_api_key',''), key="gk")
     if gk: st.session_state.gemini_api_key = gk
     st.session_state.gemini_model = st.selectbox(
-        "Modelo", ["gemini-1.5-flash","gemini-1.5-pro","gemini-2.0-flash"], key="gm")
+        "Modelo", ["gemini-2.5-flash","gemini-3"], key="gm")
     if st.session_state.get("gemini_api_key"): st.success("✅ Key OK")
 
 # Hugging Face
