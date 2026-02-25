@@ -246,9 +246,14 @@ class IOLClient:
             # Procesar fecha
             fecha_col = next((c for c in df.columns if "fecha" in c.lower()), None)
             if fecha_col:
-                df[fecha_col] = pd.to_datetime(df[fecha_col])
+                # format='mixed' evita que explote si faltan los milisegundos
+                df[fecha_col] = pd.to_datetime(df[fecha_col], format='mixed', errors='coerce')
+                df.dropna(subset=[fecha_col], inplace=True)  # Limpiar fechas inválidas
                 df.set_index(fecha_col, inplace=True)
-                df.index = df.index.normalize()
+                df.index = df.index.normalize()              # Quitarle las horas, dejar solo el día
+                
+                # ⚠️ CRÍTICO: Como trae datos intradiarios, nos quedamos solo con el ÚLTIMO dato de cada día
+                df = df[~df.index.duplicated(keep='last')]
 
             # Procesar precio
             precio_col = next((c for c in df.columns
@@ -261,8 +266,8 @@ class IOLClient:
             with st.expander("🔍 Debug – Serie histórica"):
                 st.code("\n".join(debug_lines))
 
-            st.success(f"✅ {len(df)} registros obtenidos para {simbolo}")
-            return df.sort_index()
+            st.success(f"✅ {len(df)} días de registro procesados para {simbolo}")
+            return df.sort_index())
 
         except Exception as e:
             debug_lines.append(f"   ❌ Excepción: {type(e).__name__}: {e}")
