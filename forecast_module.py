@@ -30,7 +30,7 @@ except ImportError:
 #  GOOGLE GEMINI  –  cliente liviano (sin SDK externo)
 # ═══════════════════════════════════════════════════════════════════════════
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-DEFAULT_MODEL = "gemini-1.5-flash"
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 def gemini_generate(prompt: str, api_key: str, model: str = DEFAULT_MODEL) -> str:
     """Llama a la API REST de Gemini y devuelve el texto generado."""
