@@ -142,7 +142,7 @@ class IOLClient:
                              ajustada: str = "ajustada",
                              mercado: str = "bCBA") -> pd.DataFrame:
         """
-        Obtiene serie histórica, con reintento automático si no hay datos 'ajustados'.
+        Obtiene serie histórica, con reintento automático y limpieza de fechas intradiarias.
         """
         if not self._ensure_token():
             return pd.DataFrame()
@@ -241,7 +241,7 @@ class IOLClient:
             # ✅ Crear DataFrame
             df = pd.DataFrame(items)
             debug_lines.append(f"   → Columnas: {list(df.columns)}")
-            debug_lines.append(f"   → {len(df)} filas ✅")
+            debug_lines.append(f"   → {len(df)} filas originales (intradiarias) ✅")
 
             # Procesar fecha
             fecha_col = next((c for c in df.columns if "fecha" in c.lower()), None)
@@ -250,7 +250,7 @@ class IOLClient:
                 df[fecha_col] = pd.to_datetime(df[fecha_col], format='mixed', errors='coerce')
                 df.dropna(subset=[fecha_col], inplace=True)  # Limpiar fechas inválidas
                 df.set_index(fecha_col, inplace=True)
-                df.index = df.index.normalize()              # Quitarle las horas, dejar solo el día
+                df.index = df.index.normalize()              # Quitarle las horas, dejar solo la fecha
                 
                 # ⚠️ CRÍTICO: Como trae datos intradiarios, nos quedamos solo con el ÚLTIMO dato de cada día
                 df = df[~df.index.duplicated(keep='last')]
@@ -269,7 +269,11 @@ class IOLClient:
             st.success(f"✅ {len(df)} días de registro procesados para {simbolo}")
             return df.sort_index()
 
-            
+        except Exception as e:
+            debug_lines.append(f"   ❌ Excepción: {type(e).__name__}: {e}")
+            with st.expander("🔍 Debug", expanded=True):
+                st.code("\n".join(debug_lines))
+            return pd.DataFrame()
 
     def get_fci_todos(self) -> pd.DataFrame:
         data = self._get("/Titulos/FCI")
@@ -378,7 +382,7 @@ def page_iol_explorer():
         with c1:
             instrumento = st.selectbox("Instrumento", list(INSTRUMENTOS.keys()), key="cot_inst")
         with c2:
-            panel_sel = st.selectbox("Panel", ["Todos"] + list(PANELES.keys())[1:], key="cot_panel")
+            panel_sel = st.selectbox("Panel",["Todos"] + list(PANELES.keys())[1:], key="cot_panel")
         with c3:
             pais_sel = st.selectbox("País", list(PAISES.keys()), key="cot_pais")
 
@@ -426,7 +430,7 @@ def page_iol_explorer():
         with c4:
             hasta = st.date_input("Hasta", value=datetime.today(), key="hist_hasta")
         with c5:
-            ajustada = st.selectbox("Ajuste", ["ajustada", "sinAjustar"], key="hist_ajuste")
+            ajustada = st.selectbox("Ajuste",["ajustada", "sinAjustar"], key="hist_ajuste")
 
         col_test, col_get = st.columns(2)
 
