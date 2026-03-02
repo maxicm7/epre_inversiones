@@ -10,3 +10,4 @@ plotly
 PyPDF
 statsmodels
 prophet
+google-generativeai
