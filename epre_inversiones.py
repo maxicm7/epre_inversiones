@@ -47,7 +47,7 @@ st.set_page_config(layout="wide", page_title="BPNos – Finanzas Corporativas", 
 PORTFOLIO_FILE = "portfolios_data1.json"
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  GESTIÓN DE DATOS Y PORTAFOLIOS
+#  GESTIÓN DE DATOS Y PORTAFOLIOS (ALMACENAMIENTO PERMANENTE)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def load_portfolios_from_file():
@@ -170,15 +170,10 @@ def optimize_portfolio_corporate(prices, risk_free_rate=0.02, opt_type="Maximo R
     
     return {"weights": res.x, "expected_return": final_metrics[0], "volatility": final_metrics[1], "sharpe_ratio": final_metrics[2], "tickers": list(prices.columns), "returns": returns, "method": "Scipy/SLSQP"}
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  FUNCIONES DE RENTA FIJA (BONOS)
-# ═══════════════════════════════════════════════════════════════════════════
 def calc_bond_metrics(face_value, coupon_rate, ytm, years_to_maturity, freq=2):
-    """Calcula Precio, Duración Macaulay, Modificada y Convexidad"""
     periods = int(years_to_maturity * freq)
     coupon = (coupon_rate / freq) * face_value
     rate = ytm / freq
-    
     price = 0
     mac_dur_num = 0
     conv_num = 0
@@ -201,42 +196,85 @@ def calc_bond_metrics(face_value, coupon_rate, ytm, years_to_maturity, freq=2):
 
 def page_corporate_dashboard():
     st.title("📊 Dashboard Corporativo Integral")
-    tabs = st.tabs(["💼 Mis Portafolios", "🚀 Optimización & Riesgo", "🔮 Forecast & Simulación"])
+    tabs = st.tabs(["💼 Gestión de Portafolios", "🚀 Optimización & Riesgo", "🔮 Forecast & Simulación"])
     
-    # --- TAB 1: GESTIÓN ---
+    # --- TAB 1: GESTIÓN AVANZADA (CRUD) ---
     with tabs[0]:
-        c1, c2 = st.columns([1, 2])
+        c1, c2 = st.columns([1, 1.5])
         with c1:
-            st.subheader("Crear Cartera")
-            p_name = st.text_input("Nombre Cartera")
-            p_tickers = st.text_area("Tickers (ej: AL30, GGAL)", height=100).upper()
-            p_weights = st.text_area("Pesos (ej: 0.5, 0.5)", height=100)
-            if st.button("Guardar", type="primary"):
-                try:
-                    t = [x.strip() for x in p_tickers.split(",") if x.strip()]
-                    w = [float(x) for x in p_weights.split(",") if x.strip()]
-                    if len(t) == len(w) and abs(sum(w)-1.0) < 0.02:
-                        st.session_state.portfolios[p_name] = {"tickers": t, "weights": w}
+            st.subheader("Administrar Carteras")
+            action = st.radio("Acción:", ["✨ Crear Nueva", "✏️ Editar / 🗑️ Eliminar"], horizontal=True)
+            
+            if action == "✨ Crear Nueva":
+                p_name = st.text_input("Nombre de la Cartera")
+                p_tickers = st.text_area("Tickers (separados por coma)", "AL30, GGAL").upper()
+                p_weights = st.text_area("Pesos (separados por coma, sumar 1.0)", "0.5, 0.5")
+                
+                if st.button("💾 Guardar Nueva Cartera", type="primary"):
+                    try:
+                        t = [x.strip() for x in p_tickers.split(",") if x.strip()]
+                        w = [float(x) for x in p_weights.split(",") if x.strip()]
+                        if not p_name: st.error("El nombre no puede estar vacío.")
+                        elif len(t) == len(w) and abs(sum(w)-1.0) < 0.02:
+                            st.session_state.portfolios[p_name] = {"tickers": t, "weights": w}
+                            save_portfolios_to_file(st.session_state.portfolios)
+                            st.success("Guardado exitosamente.")
+                            st.rerun()
+                        else: st.error("Error: La cantidad de pesos no coincide con los tickers o no suman 1.0.")
+                    except: st.error("Error de formato (asegúrate de usar números para los pesos).")
+            
+            else: # Editar o Eliminar
+                if st.session_state.portfolios:
+                    edit_sel = st.selectbox("Seleccionar Cartera:", list(st.session_state.portfolios.keys()))
+                    curr_data = st.session_state.portfolios[edit_sel]
+                    
+                    new_name = st.text_input("Renombrar Cartera", value=edit_sel)
+                    new_tickers = st.text_area("Modificar Tickers", value=", ".join(curr_data["tickers"])).upper()
+                    new_weights = st.text_area("Modificar Pesos", value=", ".join(map(str, curr_data["weights"])))
+                    
+                    col_b1, col_b2 = st.columns(2)
+                    if col_b1.button("🔄 Actualizar", type="primary", use_container_width=True):
+                        try:
+                            t = [x.strip() for x in new_tickers.split(",") if x.strip()]
+                            w = [float(x) for x in new_weights.split(",") if x.strip()]
+                            if len(t) == len(w) and abs(sum(w)-1.0) < 0.02:
+                                if new_name != edit_sel:
+                                    del st.session_state.portfolios[edit_sel] # Borrar el viejo si cambió de nombre
+                                st.session_state.portfolios[new_name] = {"tickers": t, "weights": w}
+                                save_portfolios_to_file(st.session_state.portfolios)
+                                st.success("Cartera actualizada.")
+                                st.rerun()
+                            else: st.error("Revisar validación de pesos y tickers.")
+                        except: st.error("Error de formato.")
+                    
+                    if col_b2.button("🗑️ Eliminar", type="primary", use_container_width=True):
+                        del st.session_state.portfolios[edit_sel]
                         save_portfolios_to_file(st.session_state.portfolios)
-                        st.success("Guardado.")
-                    else: st.error("Error en pesos o cantidad.")
-                except: st.error("Error de formato.")
+                        st.warning("Cartera eliminada permanentemente.")
+                        st.rerun()
+                else:
+                    st.info("No hay carteras guardadas actualmente.")
+        
         with c2:
+            st.subheader("Base de Datos (Permanente)")
             if st.session_state.portfolios:
-                st.dataframe(pd.DataFrame(st.session_state.portfolios).T, use_container_width=True)
+                df_ports = pd.DataFrame([
+                    {"Nombre": k, "Activos": ", ".join(v["tickers"]), "Ponderación (%)": ", ".join([f"{w*100:.1f}%" for w in v["weights"]])} 
+                    for k,v in st.session_state.portfolios.items()
+                ])
+                st.dataframe(df_ports, use_container_width=True, hide_index=True)
 
     portfolios = st.session_state.get("portfolios", {})
     if not portfolios: return
 
-    st.markdown("---")
-    col1, col2, col3 = st.columns(3)
-    p_sel = col1.selectbox("Analizar Cartera:", list(portfolios.keys()))
-    d_start = col2.date_input("Desde", pd.to_datetime("2023-01-01"))
-    d_end = col3.date_input("Hasta", pd.to_datetime("today"))
-
-    # --- TAB 2: OPTIMIZACIÓN ---
+    # --- TAB 2: OPTIMIZACIÓN Y COPILOT IA ---
     with tabs[1]:
-        st.subheader(f"Frontera Eficiente: {p_sel}")
+        st.markdown("---")
+        col1, col2, col3 = st.columns(3)
+        p_sel = col1.selectbox("Analizar Cartera (Optimización):", list(portfolios.keys()))
+        d_start = col2.date_input("Desde", pd.to_datetime("2023-01-01"))
+        d_end = col3.date_input("Hasta", pd.to_datetime("today"))
+        
         c_opt1, c_opt2 = st.columns(2)
         with c_opt1:
             risk_free = st.number_input("Tasa Libre Riesgo (RF)", 0.0, 0.5, 0.04, step=0.01)
@@ -244,13 +282,12 @@ def page_corporate_dashboard():
             target = st.selectbox("Objetivo", ["Maximo Ratio Sharpe", "Minima Volatilidad", "Retorno Maximo"])
             
         if st.button("Ejecutar Optimización"):
-            with st.spinner("Optimizando..."):
+            with st.spinner("Optimizando y descargando datos..."):
                 prices = fetch_stock_prices_for_portfolio(portfolios[p_sel]["tickers"], d_start, d_end)
             if prices is not None:
                 res = optimize_portfolio_corporate(prices, risk_free_rate=risk_free, opt_type=target)
                 if res:
                     st.session_state['last_opt_res'] = res
-                    st.session_state['last_opt_target'] = target
                     c_kpi1, c_kpi2, c_kpi3 = st.columns(3)
                     c_kpi1.metric("Retorno Esperado", f"{res['expected_return']:.1%}")
                     c_kpi2.metric("Volatilidad Anual", f"{res['volatility']:.1%}")
@@ -262,10 +299,9 @@ def page_corporate_dashboard():
                 else: st.error("Error al optimizar.")
             else: st.error("Error en datos.")
 
-        # Integración de Análisis IA (Copilot/OpenAI)
         if 'last_opt_res' in st.session_state:
             st.markdown("---")
-            if st.button("🧠 Analizar Portafolio con IA (Copilot)"):
+            if st.button("🧠 Analizar Portafolio con IA (Copilot / OpenAI)"):
                 if OPENAI_OK and st.session_state.get('openai_api_key'):
                     with st.spinner("Consultando a la IA..."):
                         try:
@@ -279,7 +315,7 @@ def page_corporate_dashboard():
                             st.info(response.choices[0].message.content)
                         except Exception as e: st.error(f"Error con OpenAI API: {e}")
                 else:
-                    st.warning("⚠️ Ingresa tu API Key de OpenAI (Copilot) en el menú lateral.")
+                    st.warning("⚠️ Ingresa tu API Key de OpenAI en el menú lateral.")
 
     # --- TAB 3: FORECAST ---
     with tabs[2]:
@@ -310,14 +346,12 @@ def page_corporate_dashboard():
                 st.plotly_chart(fig, use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  NUEVO MÓDULO: RENTA FIJA Y BONOS
+#  MÓDULO DE RENTA FIJA (BONOS, CURVA Y TEST DE ESTRÉS)
 # ═══════════════════════════════════════════════════════════════════════════
 def page_fixed_income():
-    st.title("🏛️ Renta Fija: Curva, Convexidad e Inmunización")
+    st.title("🏛️ Renta Fija: Análisis, Sensibilidad e Inmunización")
+    st.markdown("Ingresa tu cartera de bonos para calcular duración, medir el riesgo frente a cambios en las tasas (Test de Estrés) y evaluar la inmunización del portafolio.")
     
-    st.markdown("""Ingresa los datos de los bonos para generar la curva de rendimiento y analizar el portafolio frente a cambios de tasas.""")
-    
-    # Datos por defecto
     if 'bonds_data' not in st.session_state:
         st.session_state.bonds_data = pd.DataFrame({
             "Bono": ["Bono Corto", "Bono Medio", "Bono Largo"],
@@ -327,32 +361,21 @@ def page_fixed_income():
             "Nominal Invertido": [100000, 150000, 50000]
         })
 
-    # Editor interactivo de bonos
     edited_bonds = st.data_editor(st.session_state.bonds_data, num_rows="dynamic", use_container_width=True)
     st.session_state.bonds_data = edited_bonds
 
-    tabs = st.tabs(["📊 Análisis e Inmunización", "📈 Curva de Rendimiento", "💬 Chat IA (Especialista en Bonos)"])
+    tabs = st.tabs(["📊 Análisis e Inmunización", "📉 Sensibilidad (Test de Estrés)", "📈 Curva de Rendimiento", "💬 Chat IA Especializado"])
 
-    # Cálculos en segundo plano
     results = []
     total_investment = 0
-    port_mac_dur = 0
-    port_mod_dur = 0
-    port_convexity = 0
+    port_mac_dur, port_mod_dur, port_convexity = 0, 0, 0
     
     for _, row in edited_bonds.iterrows():
         try:
-            p, macd, modd, conv = calc_bond_metrics(
-                face_value=100, 
-                coupon_rate=row["Cupón (%)"]/100, 
-                ytm=row["YTM (%)"]/100, 
-                years_to_maturity=row["Años a Venc."]
-            )
+            p, macd, modd, conv = calc_bond_metrics(100, row["Cupón (%)"]/100, row["YTM (%)"]/100, row["Años a Venc."])
             weight = row["Nominal Invertido"]
             total_investment += weight
-            results.append({
-                "Bono": row["Bono"], "Precio Calc.": p, "Mac. Dur": macd, "Mod. Dur": modd, "Convexidad": conv, "Peso": weight
-            })
+            results.append({"Bono": row["Bono"], "Precio Calc.": p, "Mac. Dur": macd, "Mod. Dur": modd, "Convexidad": conv, "Peso": weight})
         except: pass
 
     if total_investment > 0 and results:
@@ -363,78 +386,89 @@ def page_fixed_income():
         port_convexity = (df_res["Convexidad"] * df_res["Peso %"]).sum()
 
     with tabs[0]:
-        st.subheader("Métricas del Portafolio de Renta Fija")
+        st.subheader("Métricas de Riesgo del Portafolio")
         if total_investment > 0:
             c1, c2, c3 = st.columns(3)
-            c1.metric("Duración Macaulay (Años)", f"{port_mac_dur:.2f}")
-            c2.metric("Duración Modificada", f"{port_mod_dur:.2f}")
-            c3.metric("Convexidad", f"{port_convexity:.2f}")
-            
+            c1.metric("Duración Macaulay (Años)", f"{port_mac_dur:.2f}", help="Centro de gravedad de los flujos. Mide riesgo de reinversión.")
+            c2.metric("Duración Modificada", f"{port_mod_dur:.2f}", help="Sensibilidad lineal del precio ante cambios en la tasa.")
+            c3.metric("Convexidad", f"{port_convexity:.2f}", help="Margen de error de la duración. A mayor convexidad, mejor comportamiento ante shocks.")
             st.dataframe(df_res[["Bono", "Precio Calc.", "Mac. Dur", "Mod. Dur", "Convexidad"]].style.format("{:.2f}", subset=["Precio Calc.", "Mac. Dur", "Mod. Dur", "Convexidad"]))
 
             st.markdown("---")
             st.subheader("🛡️ Inmunización de Portafolio")
             horizonte = st.slider("Tu Horizonte de Inversión Objetivo (Años)", 0.5, 30.0, 5.0, 0.5)
-            
             gap = port_mac_dur - horizonte
-            if abs(gap) < 0.2:
-                st.success(f"✅ **Portafolio Inmunizado**. La Duración Macaulay ({port_mac_dur:.2f}) coincide con tu horizonte. El riesgo de precio y de reinversión se cancelan.")
-            elif gap > 0:
-                st.warning(f"⚠️ **Riesgo de Tasa (Precio)**. La Duración ({port_mac_dur:.2f}) es mayor a tu horizonte ({horizonte}). Eres vulnerable a una subida de tasas.")
-            else:
-                st.info(f"ℹ️ **Riesgo de Reinversión**. La Duración ({port_mac_dur:.2f}) es menor a tu horizonte ({horizonte}). Eres vulnerable a una bajada de tasas.")
+            if abs(gap) < 0.2: st.success(f"✅ **Inmunizado**. La Duración Macaulay ({port_mac_dur:.2f}) coincide con tu horizonte. Riesgo de precio y reinversión cancelados.")
+            elif gap > 0: st.warning(f"⚠️ **Riesgo de Tasa (Precio)**. La Duración ({port_mac_dur:.2f}) es mayor a tu horizonte ({horizonte}). Vulnerable a subidas de tasas.")
+            else: st.info(f"ℹ️ **Riesgo de Reinversión**. La Duración ({port_mac_dur:.2f}) es menor a tu horizonte ({horizonte}). Vulnerable a bajadas de tasas.")
 
     with tabs[1]:
+        st.subheader("Test de Estrés de Tasas (Aproximación de Taylor)")
+        st.markdown("Calcula el impacto en el precio de tus bonos ante un shock (movimiento brusco) en la curva de tasas de interés.")
+        
+        shock_bps = st.slider("Shock en Tasas (Puntos Básicos - bps)", min_value=-300, max_value=300, value=100, step=10, help="100 bps = 1%")
+        shock_pct = shock_bps / 10000.0  
+        
+        if total_investment > 0:
+            df_stress = df_res.copy()
+            # dP/P = -ModDur * dY + 0.5 * Convexity * (dY)^2
+            df_stress["Cambio Estimado (%)"] = (-df_stress["Mod. Dur"] * shock_pct + 0.5 * df_stress["Convexidad"] * (shock_pct**2)) * 100
+            df_stress["Nuevo Precio Est."] = df_stress["Precio Calc."] * (1 + df_stress["Cambio Estimado (%)"]/100)
+            
+            col_s1, col_s2 = st.columns([1, 2])
+            with col_s1:
+                st.dataframe(df_stress[["Bono", "Cambio Estimado (%)", "Nuevo Precio Est."]].style.format("{:.2f}"))
+                port_price_change = (-port_mod_dur * shock_pct) + (0.5 * port_convexity * (shock_pct**2))
+                st.info(f"🏦 **Impacto en Cartera:** Un shock de **{shock_bps} bps** alteraría el valor del portafolio en un **{port_price_change * 100:.2f}%**.")
+            with col_s2:
+                fig_stress = px.bar(df_stress, x="Bono", y="Cambio Estimado (%)", title="Variación Porcentual del Precio", color="Cambio Estimado (%)", color_continuous_scale="RdYlGn")
+                fig_stress.update_layout(template="plotly_dark")
+                st.plotly_chart(fig_stress, use_container_width=True)
+
+    with tabs[2]:
         st.subheader("Curva de Rendimiento (Yield Curve)")
         if not edited_bonds.empty:
             df_curve = edited_bonds.sort_values(by="Años a Venc.")
-            fig = px.line(df_curve, x="Años a Venc.", y="YTM (%)", markers=True, text="Bono", title="Curva de Tasas del Portafolio")
+            fig = px.line(df_curve, x="Años a Venc.", y="YTM (%)", markers=True, text="Bono", title="Estructura Temporal de Tasas del Portafolio")
             fig.update_traces(textposition="top center")
             fig.update_layout(template="plotly_dark", yaxis_title="Yield to Maturity (%)", xaxis_title="Plazo (Años)")
             st.plotly_chart(fig, use_container_width=True)
 
-    with tabs[2]:
-        st.subheader("💬 Asistente IA para Renta Fija (Copilot/OpenAI)")
+    with tabs[3]:
+        st.subheader("💬 Asistente IA Institucional (Renta Fija)")
         if not OPENAI_OK or not st.session_state.get('openai_api_key'):
-            st.warning("⚠️ Configura la API Key de OpenAI (Copilot) en la barra lateral para usar el chat de Bonos.")
+            st.warning("⚠️ Configura la API Key de OpenAI (Copilot) en la barra lateral para conversar con la IA.")
         else:
             if "fi_messages" not in st.session_state: st.session_state.fi_messages = []
-            
-            for msg in st.session_state.fi_messages:
-                st.chat_message(msg["role"]).write(msg["content"])
+            for msg in st.session_state.fi_messages: st.chat_message(msg["role"]).write(msg["content"])
                 
-            if prompt := st.chat_input("Pregúntale a la IA sobre convexidad, inmunización o tu curva de tasas..."):
+            if prompt := st.chat_input("Ej: ¿Qué significa mi convexidad actual? ¿Estoy cubierto si sube la tasa?"):
                 st.session_state.fi_messages.append({"role": "user", "content": prompt})
                 st.chat_message("user").write(prompt)
                 
-                # Contexto inyectado en la IA de forma oculta
-                context = f"Portafolio de bonos actual: MacDur={port_mac_dur:.2f}, ModDur={port_mod_dur:.2f}, Convexidad={port_convexity:.2f}. "
+                # Contexto enriquecido para la IA
+                port_price_change = ((-port_mod_dur * 0.01) + (0.5 * port_convexity * (0.01**2))) * 100 # Shock de +100bps precalculado
+                context = f"Contexto matemático actual: Macaulay={port_mac_dur:.2f} años, Modificada={port_mod_dur:.2f}, Convexidad={port_convexity:.2f}. Si la tasa sube 100 bps (+1%), el portafolio caería aproximadamente {port_price_change:.2f}%."
                 
                 try:
                     client = OpenAI(api_key=st.session_state.openai_api_key)
-                    messages_for_api = [{"role": "system", "content": f"Eres un experto en Renta Fija. Basa tus respuestas en este contexto matemático del portafolio del usuario: {context}"}]
+                    messages_for_api = [{"role": "system", "content": f"Eres un experto en Bonos y Renta Fija corporativa. Responde directo basándote en este portafolio: {context}"}]
                     messages_for_api.extend([{"role": m["role"], "content": m["content"]} for m in st.session_state.fi_messages[-5:]])
                     
-                    response = client.chat.completions.create(
-                        model=st.session_state.get('openai_model', 'gpt-3.5-turbo'),
-                        messages=messages_for_api
-                    )
+                    response = client.chat.completions.create(model=st.session_state.get('openai_model', 'gpt-3.5-turbo'), messages=messages_for_api)
                     reply = response.choices[0].message.content
                     st.session_state.fi_messages.append({"role": "assistant", "content": reply})
                     st.chat_message("assistant").write(reply)
                 except Exception as e:
                     st.error(f"Error de API: {e}")
 
-# (El resto de funciones de Yahoo y Gemini se mantienen igual)
+# (Yahoo Explorer, Gemini Explorer y Menú se mantienen igual que la iteración anterior)
 def page_yahoo_explorer():
     st.title("🌎 Explorador de Mercado (Yahoo Finance)")
     c1, c2, c3 = st.columns([1, 1, 2])
-    with c1:
-        ticker = st.text_input("Ticker Symbol", value="AAPL").upper()
-        if not ticker: return
-    with c2:
-        period = st.selectbox("Periodo", ["1mo", "3mo", "6mo", "1y", "2y", "5y", "ytd", "max"], index=3)
-    
+    with c1: ticker = st.text_input("Ticker Symbol", value="AAPL").upper()
+    with c2: period = st.selectbox("Periodo", ["1mo", "3mo", "6mo", "1y", "2y", "5y", "ytd", "max"], index=3)
+    if not ticker: return
     with st.spinner(f"Descargando datos..."):
         try:
             search_ticker = ticker
@@ -445,7 +479,6 @@ def page_yahoo_explorer():
                 stock = yf.Ticker(search_ticker)
                 hist = stock.history(period=period)
             if hist.empty: st.error("No hay datos."); return
-
             info = stock.info
             st.subheader(f"{info.get('longName', ticker)} ({search_ticker})")
             m1, m2, m3, m4 = st.columns(4)
@@ -453,28 +486,26 @@ def page_yahoo_explorer():
             m2.metric("Market Cap", f"${info.get('marketCap', 'N/A'):,}")
             m3.metric("Beta", info.get('beta', 'N/A'))
             m4.metric("Sector", info.get('sector', 'N/A'))
-
             fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'])])
             fig.update_layout(title="Evolución", template="plotly_dark", height=500)
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e: st.error(f"Error: {e}")
 
 def page_event_analyzer_gemini():
-    st.header("📰 Analizador de Noticias con IA (Gemini)")
-    if not GEMINI_OK: st.error("Librería google-generativeai no instalada."); return
+    st.header("📰 Analizador de Noticias con IA")
+    if not GEMINI_OK: st.error("Librería instalada."); return
     if not st.session_state.get('gemini_api_key'): st.warning("Configure API Key."); return
     news_text = st.text_area("Pega la noticia aquí:", height=150)
     if st.button("🤖 Analizar"):
         try:
             genai.configure(api_key=st.session_state.gemini_api_key)
             model = genai.GenerativeModel(st.session_state.gemini_model)
-            with st.spinner("Analizando..."):
-                st.markdown(model.generate_content(f"Analiza financieramente: '{news_text}'").text)
+            with st.spinner("Analizando..."): st.markdown(model.generate_content(f"Analiza financieramente: '{news_text}'").text)
         except Exception as e: st.error(f"Error: {e}")
 
 def page_chat_gemini():
-    st.header("💬 Asistente Gemini General")
-    if not GEMINI_OK: st.error("Librería google-generativeai no instalada."); return
+    st.header("💬 Asistente IA General")
+    if not GEMINI_OK: st.error("Librería no instalada."); return
     if not st.session_state.get('gemini_api_key'): st.warning("Configure API Key."); return
     if "messages" not in st.session_state: st.session_state.messages = []
     for msg in st.session_state.messages: st.chat_message("user" if msg["role"] == "user" else "assistant").write(msg["content"])
@@ -500,7 +531,7 @@ if 'portfolios' not in st.session_state: st.session_state.portfolios = load_port
 st.sidebar.title("Configuración y Accesos")
 
 with st.sidebar.expander("🤖 IA (OpenAI / Copilot)", expanded=True):
-    st.markdown("<small>Usado para Renta Fija y Portafolios</small>", unsafe_allow_html=True)
+    st.markdown("<small>Usado para Analizar Portafolios y Bonos</small>", unsafe_allow_html=True)
     st.session_state.openai_api_key = st.text_input("OpenAI API Key", type="password", value=st.session_state.get('openai_api_key', ''))
     st.session_state.openai_model = st.selectbox("Modelo OpenAI", ["gpt-3.5-turbo", "gpt-4o"])
 
@@ -517,23 +548,23 @@ st.sidebar.markdown("---")
 opciones = [
     "Inicio", 
     "📊 Dashboard Corporativo", 
-    "🏛️ Renta Fija (Bonos y Curvas)",  # <--- NUEVA PESTAÑA
+    "🏛️ Renta Fija (Bonos y Curvas)", 
     "🏦 Explorador IOL API", 
     "🌎 Explorador Global (Yahoo)", 
     "🔭 Modelos Avanzados (Forecast)", 
-    "📰 Analizador Eventos (Gemini)", 
-    "💬 Chat IA General (Gemini)"
+    "📰 Analizador Eventos (IA)", 
+    "💬 Chat IA General"
 ]
 
 sel = st.sidebar.radio("Navegación", opciones, index=opciones.index(st.session_state.selected_page) if st.session_state.selected_page in opciones else 0)
 
 if sel != st.session_state.selected_page: st.session_state.selected_page = sel; st.rerun()
 
-if sel == "Inicio": st.title("BPNos - Finanzas Corporativas"); st.info("Seleccione módulo en sidebar.")
+if sel == "Inicio": st.title("BPNos - Finanzas Corporativas"); st.info("Seleccione un módulo en la barra lateral.")
 elif sel == "📊 Dashboard Corporativo": page_corporate_dashboard()
-elif sel == "🏛️ Renta Fija (Bonos y Curvas)": page_fixed_income() # <--- LLAMADA A NUEVA FUNCIÓN
+elif sel == "🏛️ Renta Fija (Bonos y Curvas)": page_fixed_income()
 elif sel == "🏦 Explorador IOL API": page_iol_explorer()
 elif sel == "🌎 Explorador Global (Yahoo)": page_yahoo_explorer()
 elif sel == "🔭 Modelos Avanzados (Forecast)": page_forecast()
-elif sel == "📰 Analizador Eventos (Gemini)": page_event_analyzer_gemini()
-elif sel == "💬 Chat IA General (Gemini)": page_chat_gemini()
+elif sel == "📰 Analizador Eventos (IA)": page_event_analyzer_gemini()
+elif sel == "💬 Chat IA General": page_chat_gemini()
