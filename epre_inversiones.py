@@ -417,7 +417,9 @@ def page_fixed_income():
             
             col_s1, col_s2 = st.columns([1, 2])
             with col_s1:
-                st.dataframe(df_stress[["Bono", "Cambio Estimado (%)", "Nuevo Precio Est."]].style.format("{:.2f}"))
+                st.dataframe(df_stress[["Bono", "Cambio Estimado (%)", "Nuevo Precio Est."]].style.format(
+    "{:.2f}", subset=["Cambio Estimado (%)", "Nuevo Precio Est."]
+))
                 port_price_change = (-port_mod_dur * shock_pct) + (0.5 * port_convexity * (shock_pct**2))
                 st.info(f"🏦 **Impacto en Cartera:** Un shock de **{shock_bps} bps** alteraría el valor del portafolio en un **{port_price_change * 100:.2f}%**.")
             with col_s2:
