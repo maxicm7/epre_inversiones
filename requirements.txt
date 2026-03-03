@@ -11,3 +11,4 @@ PyPDF
 statsmodels
 prophet
 google-generativeai
+openai
