@@ -301,21 +301,29 @@ def page_corporate_dashboard():
 
         if 'last_opt_res' in st.session_state:
             st.markdown("---")
-            if st.button("🧠 Analizar Portafolio con IA (Copilot / OpenAI)"):
-                if OPENAI_OK and st.session_state.get('openai_api_key'):
-                    with st.spinner("Consultando a la IA..."):
+            if st.button("🧠 Analizar Portafolio con IA"):
+                if not st.session_state.get("preferred_ai"):
+                    st.warning("⚠️ Ingresa tu API Key (OpenAI o Gemini) en el menú lateral.")
+                else:
+                    with st.spinner(f"Consultando a la IA ({st.session_state.preferred_ai})..."):
                         try:
-                            client = OpenAI(api_key=st.session_state.openai_api_key)
                             data_str = f"Retorno: {st.session_state['last_opt_res']['expected_return']:.2f}, Volatilidad: {st.session_state['last_opt_res']['volatility']:.2f}. Activos: {st.session_state['last_opt_res']['tickers']}."
                             prompt = f"Actúa como un asesor financiero institucional. Analiza este portafolio: {data_str}. ¿Cuáles son los riesgos y fortalezas de esta distribución?"
-                            response = client.chat.completions.create(
-                                model=st.session_state.get('openai_model', 'gpt-3.5-turbo'),
-                                messages=[{"role": "user", "content": prompt}]
-                            )
-                            st.info(response.choices[0].message.content)
-                        except Exception as e: st.error(f"Error con OpenAI API: {e}")
-                else:
-                    st.warning("⚠️ Ingresa tu API Key de OpenAI en el menú lateral.")
+                            
+                            if st.session_state.preferred_ai == "OpenAI":
+                                client = OpenAI(api_key=st.session_state.openai_api_key)
+                                response = client.chat.completions.create(
+                                    model=st.session_state.get('openai_model', 'gpt-4o'),
+                                    messages=[{"role": "user", "content": prompt}]
+                                )
+                                st.info(response.choices[0].message.content)
+                            elif st.session_state.preferred_ai == "Gemini":
+                                genai.configure(api_key=st.session_state.gemini_api_key)
+                                model = genai.GenerativeModel(st.session_state.gemini_model)
+                                response = model.generate_content(prompt)
+                                st.info(response.text)
+                        except Exception as e: 
+                            st.error(f"Error con API de IA: {e}")
 
     # --- TAB 3: FORECAST ---
     with tabs[2]:
@@ -350,8 +358,44 @@ def page_corporate_dashboard():
 # ═══════════════════════════════════════════════════════════════════════════
 def page_fixed_income():
     st.title("🏛️ Renta Fija: Análisis, Sensibilidad e Inmunización")
-    st.markdown("Ingresa tu cartera de bonos para calcular duración, medir el riesgo frente a cambios en las tasas (Test de Estrés) y evaluar la inmunización del portafolio.")
+    st.markdown("Ingresa tu cartera de bonos para calcular duración, medir el riesgo frente a cambios en las tasas y evaluar la inmunización del portafolio.")
     
+    st.subheader("Configuración de Cartera")
+    rf_mode = st.radio("Método de Ingreso de Datos", ["✍️ Carga Manual", "🏦 Importar Precios desde IOL"], horizontal=True)
+    
+    if rf_mode == "🏦 Importar Precios desde IOL":
+        c_iol1, c_iol2 = st.columns([3, 1])
+        iol_tickers = c_iol1.text_input("Tickers a Importar (ej. AL30, GD30, TX26)")
+        if c_iol2.button("⬇️ Consultar IOL"):
+            client = get_iol_client()
+            if not client or not st.session_state.get('iol_username'):
+                st.error("⚠️ Conéctate a IOL en la barra lateral primero.")
+            else:
+                tickers_list = [t.strip().upper() for t in iol_tickers.split(",") if t.strip()]
+                fetched_bonds = []
+                with st.spinner("Buscando cotizaciones en IOL..."):
+                    for t in tickers_list:
+                        try:
+                            start_d = (pd.to_datetime("today") - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+                            end_d = pd.to_datetime("today").strftime("%Y-%m-%d")
+                            df_hist = client.get_serie_historica(t, start_d, end_d)
+                            if not df_hist.empty and "ultimoPrecio" in df_hist.columns:
+                                last_price = df_hist["ultimoPrecio"].iloc[-1]
+                                fetched_bonds.append({
+                                    "Bono": t,
+                                    "Cupón (%)": 5.0, # Valores a completar por el usuario
+                                    "YTM (%)": 10.0,
+                                    "Años a Venc.": 3.0,
+                                    "Nominal Invertido": 10000,
+                                    "Precio IOL (Ref.)": last_price
+                                })
+                        except Exception as e:
+                            st.warning(f"No se pudo obtener {t}: {e}")
+                
+                if fetched_bonds:
+                    st.session_state.bonds_data = pd.DataFrame(fetched_bonds)
+                    st.success("✅ Datos importados correctamente. Ajusta el Cupón, YTM y Vencimiento.")
+
     if 'bonds_data' not in st.session_state:
         st.session_state.bonds_data = pd.DataFrame({
             "Bono": ["Bono Corto", "Bono Medio", "Bono Largo"],
@@ -411,15 +455,12 @@ def page_fixed_income():
         
         if total_investment > 0:
             df_stress = df_res.copy()
-            # dP/P = -ModDur * dY + 0.5 * Convexity * (dY)^2
             df_stress["Cambio Estimado (%)"] = (-df_stress["Mod. Dur"] * shock_pct + 0.5 * df_stress["Convexidad"] * (shock_pct**2)) * 100
             df_stress["Nuevo Precio Est."] = df_stress["Precio Calc."] * (1 + df_stress["Cambio Estimado (%)"]/100)
             
             col_s1, col_s2 = st.columns([1, 2])
             with col_s1:
-                st.dataframe(df_stress[["Bono", "Cambio Estimado (%)", "Nuevo Precio Est."]].style.format(
-    "{:.2f}", subset=["Cambio Estimado (%)", "Nuevo Precio Est."]
-))
+                st.dataframe(df_stress[["Bono", "Cambio Estimado (%)", "Nuevo Precio Est."]].style.format("{:.2f}", subset=["Cambio Estimado (%)", "Nuevo Precio Est."]))
                 port_price_change = (-port_mod_dur * shock_pct) + (0.5 * port_convexity * (shock_pct**2))
                 st.info(f"🏦 **Impacto en Cartera:** Un shock de **{shock_bps} bps** alteraría el valor del portafolio en un **{port_price_change * 100:.2f}%**.")
             with col_s2:
@@ -438,33 +479,43 @@ def page_fixed_income():
 
     with tabs[3]:
         st.subheader("💬 Asistente IA Institucional (Renta Fija)")
-        if not OPENAI_OK or not st.session_state.get('openai_api_key'):
-            st.warning("⚠️ Configura la API Key de OpenAI (Copilot) en la barra lateral para conversar con la IA.")
+        if not st.session_state.get('preferred_ai'):
+            st.warning("⚠️ Configura una API Key (OpenAI o Gemini) en la barra lateral para conversar con la IA.")
         else:
             if "fi_messages" not in st.session_state: st.session_state.fi_messages = []
-            for msg in st.session_state.fi_messages: st.chat_message(msg["role"]).write(msg["content"])
+            for msg in st.session_state.fi_messages: 
+                st.chat_message(msg["role"]).write(msg["content"])
                 
-            if prompt := st.chat_input("Ej: ¿Qué significa mi convexidad actual? ¿Estoy cubierto si sube la tasa?"):
+            if prompt := st.chat_input("Ej: ¿Estoy cubierto si sube la tasa?"):
                 st.session_state.fi_messages.append({"role": "user", "content": prompt})
                 st.chat_message("user").write(prompt)
                 
-                # Contexto enriquecido para la IA
-                port_price_change = ((-port_mod_dur * 0.01) + (0.5 * port_convexity * (0.01**2))) * 100 # Shock de +100bps precalculado
-                context = f"Contexto matemático actual: Macaulay={port_mac_dur:.2f} años, Modificada={port_mod_dur:.2f}, Convexidad={port_convexity:.2f}. Si la tasa sube 100 bps (+1%), el portafolio caería aproximadamente {port_price_change:.2f}%."
+                port_price_change = ((-port_mod_dur * 0.01) + (0.5 * port_convexity * (0.01**2))) * 100
+                context = f"Contexto actual: Macaulay={port_mac_dur:.2f} años, Modificada={port_mod_dur:.2f}, Convexidad={port_convexity:.2f}. Si la tasa sube 100 bps (+1%), el portafolio caería un {port_price_change:.2f}%."
                 
                 try:
-                    client = OpenAI(api_key=st.session_state.openai_api_key)
-                    messages_for_api = [{"role": "system", "content": f"Eres un experto en Bonos y Renta Fija corporativa. Responde directo basándote en este portafolio: {context}"}]
-                    messages_for_api.extend([{"role": m["role"], "content": m["content"]} for m in st.session_state.fi_messages[-5:]])
-                    
-                    response = client.chat.completions.create(model=st.session_state.get('openai_model', 'gpt-3.5-turbo'), messages=messages_for_api)
-                    reply = response.choices[0].message.content
+                    if st.session_state.preferred_ai == "OpenAI":
+                        client = OpenAI(api_key=st.session_state.openai_api_key)
+                        messages_for_api = [{"role": "system", "content": f"Eres experto en Bonos. Responde basándote en: {context}"}]
+                        messages_for_api.extend([{"role": m["role"], "content": m["content"]} for m in st.session_state.fi_messages[-5:]])
+                        response = client.chat.completions.create(model=st.session_state.get('openai_model', 'gpt-4o'), messages=messages_for_api)
+                        reply = response.choices[0].message.content
+                    elif st.session_state.preferred_ai == "Gemini":
+                        genai.configure(api_key=st.session_state.gemini_api_key)
+                        model = genai.GenerativeModel(st.session_state.gemini_model)
+                        hist = [{'role': ('user' if m['role']=='user' else 'model'), 'parts': [m['content']]} for m in st.session_state.fi_messages[-5:-1]]
+                        chat = model.start_chat(history=hist)
+                        full_prompt = f"[Contexto Matemático: {context}]\n\n{prompt}"
+                        reply = chat.send_message(full_prompt).text
+
                     st.session_state.fi_messages.append({"role": "assistant", "content": reply})
                     st.chat_message("assistant").write(reply)
                 except Exception as e:
                     st.error(f"Error de API: {e}")
 
-# (Yahoo Explorer, Gemini Explorer y Menú se mantienen igual que la iteración anterior)
+# ═══════════════════════════════════════════════════════════════════════════
+#  OTROS EXPLORADORES E IA GENERAL
+# ═══════════════════════════════════════════════════════════════════════════
 def page_yahoo_explorer():
     st.title("🌎 Explorador de Mercado (Yahoo Finance)")
     c1, c2, c3 = st.columns([1, 1, 2])
@@ -493,35 +544,63 @@ def page_yahoo_explorer():
             st.plotly_chart(fig, use_container_width=True)
         except Exception as e: st.error(f"Error: {e}")
 
-def page_event_analyzer_gemini():
+def page_event_analyzer():
     st.header("📰 Analizador de Noticias con IA")
-    if not GEMINI_OK: st.error("Librería instalada."); return
-    if not st.session_state.get('gemini_api_key'): st.warning("Configure API Key."); return
+    if not st.session_state.get('preferred_ai'): 
+        st.warning("⚠️ Configure una API Key (OpenAI o Gemini) en la barra lateral.")
+        return
+        
     news_text = st.text_area("Pega la noticia aquí:", height=150)
     if st.button("🤖 Analizar"):
-        try:
-            genai.configure(api_key=st.session_state.gemini_api_key)
-            model = genai.GenerativeModel(st.session_state.gemini_model)
-            with st.spinner("Analizando..."): st.markdown(model.generate_content(f"Analiza financieramente: '{news_text}'").text)
-        except Exception as e: st.error(f"Error: {e}")
+        with st.spinner(f"Analizando con {st.session_state.preferred_ai}..."):
+            try:
+                prompt = f"Analiza financieramente la siguiente noticia y destaca los puntos clave, el impacto en los mercados y posibles estrategias:\n\n'{news_text}'"
+                if st.session_state.preferred_ai == "OpenAI":
+                    client = OpenAI(api_key=st.session_state.openai_api_key)
+                    response = client.chat.completions.create(
+                        model=st.session_state.openai_model,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    st.markdown(response.choices[0].message.content)
+                elif st.session_state.preferred_ai == "Gemini":
+                    genai.configure(api_key=st.session_state.gemini_api_key)
+                    model = genai.GenerativeModel(st.session_state.gemini_model)
+                    st.markdown(model.generate_content(prompt).text)
+            except Exception as e: 
+                st.error(f"Error: {e}")
 
-def page_chat_gemini():
+def page_chat_general():
     st.header("💬 Asistente IA General")
-    if not GEMINI_OK: st.error("Librería no instalada."); return
-    if not st.session_state.get('gemini_api_key'): st.warning("Configure API Key."); return
-    if "messages" not in st.session_state: st.session_state.messages = []
-    for msg in st.session_state.messages: st.chat_message("user" if msg["role"] == "user" else "assistant").write(msg["content"])
-    if prompt := st.chat_input("Consulta..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    if not st.session_state.get('preferred_ai'): 
+        st.warning("⚠️ Configure una API Key (OpenAI o Gemini) en la barra lateral.")
+        return
+        
+    if "general_messages" not in st.session_state: 
+        st.session_state.general_messages = []
+        
+    for msg in st.session_state.general_messages: 
+        st.chat_message(msg["role"]).write(msg["content"])
+        
+    if prompt := st.chat_input("Escribe tu consulta financiera..."):
+        st.session_state.general_messages.append({"role": "user", "content": prompt})
         st.chat_message("user").write(prompt)
         try:
-            genai.configure(api_key=st.session_state.gemini_api_key)
-            model = genai.GenerativeModel(st.session_state.gemini_model)
-            hist = [{'role': ('user' if m['role']=='user' else 'model'), 'parts': [m['content']]} for m in st.session_state.messages[-6:]]
-            resp = model.start_chat(history=hist[:-1]).send_message(prompt).text
-            st.session_state.messages.append({"role": "model", "content": resp})
-            st.chat_message("assistant").write(resp)
-        except Exception as e: st.error(f"Error: {e}")
+            if st.session_state.preferred_ai == "OpenAI":
+                client = OpenAI(api_key=st.session_state.openai_api_key)
+                messages_for_api = [{"role": m["role"], "content": m["content"]} for m in st.session_state.general_messages[-10:]]
+                response = client.chat.completions.create(model=st.session_state.openai_model, messages=messages_for_api)
+                reply = response.choices[0].message.content
+            elif st.session_state.preferred_ai == "Gemini":
+                genai.configure(api_key=st.session_state.gemini_api_key)
+                model = genai.GenerativeModel(st.session_state.gemini_model)
+                hist = [{'role': ('user' if m['role']=='user' else 'model'), 'parts': [m['content']]} for m in st.session_state.general_messages[-10:-1]]
+                chat = model.start_chat(history=hist)
+                reply = chat.send_message(prompt).text
+                
+            st.session_state.general_messages.append({"role": "assistant", "content": reply})
+            st.chat_message("assistant").write(reply)
+        except Exception as e: 
+            st.error(f"Error: {e}")
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  SIDEBAR Y NAVEGACIÓN
@@ -533,13 +612,32 @@ if 'portfolios' not in st.session_state: st.session_state.portfolios = load_port
 st.sidebar.title("Configuración y Accesos")
 
 with st.sidebar.expander("🤖 IA (OpenAI / Copilot)", expanded=True):
-    st.markdown("<small>Usado para Analizar Portafolios y Bonos</small>", unsafe_allow_html=True)
+    st.markdown("<small>Usado para Análisis Generales e Institucionales</small>", unsafe_allow_html=True)
     st.session_state.openai_api_key = st.text_input("OpenAI API Key", type="password", value=st.session_state.get('openai_api_key', ''))
-    st.session_state.openai_model = st.selectbox("Modelo OpenAI", ["gpt-3.5-turbo", "gpt-4o"])
+    st.session_state.openai_model = st.selectbox("Modelo OpenAI", ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"])
 
 with st.sidebar.expander("🧠 IA (Gemini)", expanded=False):
     st.session_state.gemini_api_key = st.text_input("Gemini API Key", type="password", value=st.session_state.get('gemini_api_key', ''))
-    st.session_state.gemini_model = st.selectbox("Modelo", ["gemini-1.5-flash", "gemini-pro"])
+    # Selección con los modelos más recientes de Gemini
+    st.session_state.gemini_model = st.selectbox("Modelo Gemini", [
+        "gemini-2.5-flash", 
+        "gemini-2.0-flash", 
+        "gemini-1.5-pro", 
+        "gemini-1.5-flash", 
+        "gemini-pro"
+    ])
+
+# Validación dinámica del motor de IA preferido según las llaves ingresadas
+st.sidebar.markdown("---")
+available_ais = []
+if OPENAI_OK and st.session_state.get('openai_api_key'): available_ais.append("OpenAI")
+if GEMINI_OK and st.session_state.get('gemini_api_key'): available_ais.append("Gemini")
+
+if available_ais:
+    st.session_state.preferred_ai = st.sidebar.radio("✨ Motor IA Activo", available_ais)
+else:
+    st.session_state.preferred_ai = None
+    st.sidebar.warning("⚠️ Ingresa una API Key para usar IA.")
 
 with st.sidebar.expander("🏦 IOL"):
     user_iol = st.text_input("Usuario IOL")
@@ -568,5 +666,5 @@ elif sel == "🏛️ Renta Fija (Bonos y Curvas)": page_fixed_income()
 elif sel == "🏦 Explorador IOL API": page_iol_explorer()
 elif sel == "🌎 Explorador Global (Yahoo)": page_yahoo_explorer()
 elif sel == "🔭 Modelos Avanzados (Forecast)": page_forecast()
-elif sel == "📰 Analizador Eventos (IA)": page_event_analyzer_gemini()
-elif sel == "💬 Chat IA General": page_chat_gemini()
+elif sel == "📰 Analizador Eventos (IA)": page_event_analyzer()
+elif sel == "💬 Chat IA General": page_chat_general()
