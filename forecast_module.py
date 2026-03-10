@@ -26,6 +26,13 @@ try:
 except ImportError:
     PROPHET_OK = False
 
+# ── Intento de importar Tbats ──────────────────────────────────────────────
+try:
+    from tbats import TBATS
+    TBATS_OK = True
+except ImportError:
+    TBATS_OK = False
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  GOOGLE GEMINI  –  cliente liviano (sin SDK externo)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -258,6 +265,48 @@ def run_prophet(target: pd.Series, exog_df: pd.DataFrame | None,
         "prophet_forecast": forecast
     }
 
+def run_tbats(target: pd.Series, horizon: int = 30, seasonal_periods: list = None) -> dict:
+    """Ajusta TBATS y devuelve pronóstico. (Modelo Univariado puro)."""
+    target = target.dropna()
+
+    if not seasonal_periods:
+        seasonal_periods = None
+
+    estimator = TBATS(
+        seasonal_periods=seasonal_periods,
+        use_arma_errors=True,
+        use_box_cox=None,
+        use_trend=None,
+        use_damped_trend=None
+    )
+    model = estimator.fit(target.values)
+
+    fc_mean, conf_int = model.forecast(steps=horizon, confidence_level=0.95)
+
+    last_date = target.index[-1]
+    future_dates = pd.bdate_range(start=last_date + timedelta(days=1), periods=horizon)
+
+    fc_series = pd.Series(fc_mean, index=future_dates)
+    ci_lower = pd.Series(conf_int["lower_bound"], index=future_dates)
+    ci_upper = pd.Series(conf_int["upper_bound"], index=future_dates)
+
+    fitted = pd.Series(model.y_hat, index=target.index)
+
+    resid = target.values - model.y_hat
+    mae = np.nanmean(np.abs(resid))
+    rmse = np.sqrt(np.nanmean(resid**2))
+    aic = model.aic
+
+    return {
+        "model": "TBATS",
+        "fitted": fitted,
+        "forecast": fc_series,
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+        "target": target,
+        "metrics": {"MAE": round(mae, 4), "RMSE": round(rmse, 4), "AIC": round(aic, 2)},
+        "summary": f"Modelo TBATS Ajustado: {str(model)}"
+    }
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  GRÁFICOS
@@ -397,7 +446,7 @@ def build_gemini_prompt(result: dict, exog_tickers: list[str], target_label: str
 ## Tarea
 1. Interpreta la calidad del ajuste del modelo basándote en las métricas.
 2. Analiza el pronóstico: ¿es alcista, bajista o neutro? ¿Con qué nivel de confianza?
-3. Explica el rol de cada variable exógena y si su inclusión mejora el modelo.
+3. Explica el rol de cada variable exógena y si su inclusión mejora el modelo. (Si el modelo es TBATS, ignora su inclusión directa e interpreta el contexto general del mercado).
 4. Identifica riesgos clave para el pronóstico.
 5. Proporciona una recomendación de posicionamiento (comprar / mantener / vender / esperar) con justificación breve.
 6. Sé conciso: máximo 400 palabras. Usa viñetas cuando sea útil.
@@ -429,11 +478,11 @@ def page_forecast():
     """, unsafe_allow_html=True)
 
     st.markdown('<p class="fc-header">🔭 Módulo de Pronóstico con Variables Exógenas</p>', unsafe_allow_html=True)
-    st.markdown('<p class="fc-sub">SARIMAX · PROPHET · GEMINI AI · GRANGER CAUSALITY</p>', unsafe_allow_html=True)
+    st.markdown('<p class="fc-sub">SARIMAX · PROPHET · TBATS · GEMINI AI · GRANGER CAUSALITY</p>', unsafe_allow_html=True)
     st.markdown("---")
 
     # ── Verificación de dependencias ─────────────────────────────────────
-    col_d1, col_d2, col_d3 = st.columns(3)
+    col_d1, col_d2, col_d3, col_d4 = st.columns(4)
     with col_d1:
         label = '<span class="tag-ok">statsmodels ✓</span>' if STATSMODELS_OK else '<span class="tag-no">statsmodels ✗</span>'
         st.markdown(f"**SARIMAX:** {label}", unsafe_allow_html=True)
@@ -441,12 +490,15 @@ def page_forecast():
         label = '<span class="tag-ok">prophet ✓</span>' if PROPHET_OK else '<span class="tag-no">prophet ✗</span>'
         st.markdown(f"**Prophet:** {label}", unsafe_allow_html=True)
     with col_d3:
+        label = '<span class="tag-ok">tbats ✓</span>' if TBATS_OK else '<span class="tag-no">tbats ✗</span>'
+        st.markdown(f"**TBATS:** {label}", unsafe_allow_html=True)
+    with col_d4:
         gemini_key = st.session_state.get("gemini_api_key", "")
         label = '<span class="tag-ok">key cargada ✓</span>' if gemini_key else '<span class="tag-no">sin key ✗</span>'
         st.markdown(f"**Gemini:** {label}", unsafe_allow_html=True)
 
-    if not STATSMODELS_OK and not PROPHET_OK:
-        st.error("Instala al menos uno: `pip install statsmodels` o `pip install prophet`")
+    if not STATSMODELS_OK and not PROPHET_OK and not TBATS_OK:
+        st.error("Instala al menos uno: `pip install statsmodels`, `pip install prophet` o `pip install tbats`")
         return
 
     st.markdown("---")
@@ -475,13 +527,17 @@ def page_forecast():
 
         c6, c7 = st.columns(2)
         with c6:
-            model_choice = st.selectbox("🤖 Modelo",
-                                        [m for m, ok in [("SARIMAX", STATSMODELS_OK), ("Prophet", PROPHET_OK)] if ok])
+            available_models = [m for m, ok in [("SARIMAX", STATSMODELS_OK), ("Prophet", PROPHET_OK), ("TBATS", TBATS_OK)] if ok]
+            model_choice = st.selectbox("🤖 Modelo", available_models)
         with c7:
             use_returns = st.checkbox("Usar retornos (en lugar de precios)", value=False,
                                       help="Recomendado si las series no son estacionarias")
 
-        # Parámetros SARIMAX (si aplica)
+        # Inicializar variables por defecto
+        p, d, q, P, D, Q, S = 1, 1, 1, 0, 0, 0, 0
+        seasonal_periods = []
+
+        # Parámetros específicos según modelo
         if model_choice == "SARIMAX":
             with st.expander("🔧 Parámetros SARIMAX (p,d,q) y estacionalidad (P,D,Q,s)"):
                 sc1, sc2, sc3 = st.columns(3)
@@ -493,8 +549,13 @@ def page_forecast():
                 with sc5: D = st.number_input("D", 0, 1, 0)
                 with sc6: Q = st.number_input("Q", 0, 2, 0)
                 with sc7: S = st.number_input("s", 0, 52, 0)
-        else:
-            p, d, q, P, D, Q, S = 1, 1, 1, 0, 0, 0, 0
+        elif model_choice == "TBATS":
+            with st.expander("🔧 Parámetros TBATS (Frecuencias Estacionales)"):
+                st.info("ℹ️ TBATS es un modelo puramente univariado. Las variables exógenas serán ignoradas para el pronóstico estadístico.")
+                ts1, ts2 = st.columns(2)
+                with ts1: tbats_s1 = st.number_input("Estacionalidad 1 (ej: 5 días laborables)", 0, 365, 5)
+                with ts2: tbats_s2 = st.number_input("Estacionalidad 2 (ej: 21 días al mes)", 0, 365, 21)
+                seasonal_periods = [s for s in [tbats_s1, tbats_s2] if s > 0]
 
         run_granger  = st.checkbox("🧪 Ejecutar prueba de causalidad de Granger", value=True)
         max_lag_gr   = st.number_input("   Lags máximos Granger", 1, 10, 5) if run_granger else 5
@@ -597,7 +658,7 @@ def page_forecast():
     # ── Ajuste del modelo ────────────────────────────────────────────────
     st.markdown("### 🤖 Entrenamiento y pronóstico")
 
-    with st.spinner(f"Ajustando {model_choice}..."):
+    with st.spinner(f"Ajustando {model_choice} (esto puede tardar unos segundos)..."):
         try:
             if model_choice == "SARIMAX":
                 result = run_sarimax(
@@ -605,6 +666,8 @@ def page_forecast():
                     order=(p, d, q), seasonal_order=(P, D, Q, S),
                     horizon=horizon
                 )
+            elif model_choice == "TBATS":
+                result = run_tbats(target_series, horizon=horizon, seasonal_periods=seasonal_periods)
             else:
                 result = run_prophet(target_series, exog_df, horizon=horizon)
         except Exception as e:
@@ -642,9 +705,9 @@ def page_forecast():
         st.download_button("📥 Descargar pronóstico CSV", csv_fc,
                            file_name=f"forecast_{target_col}.csv", mime="text/csv")
 
-    # ── Resumen SARIMAX ──────────────────────────────────────────────────
-    if model_choice == "SARIMAX":
-        with st.expander("📜 Resumen estadístico SARIMAX"):
+    # ── Resumen Modelo ──────────────────────────────────────────────────
+    if model_choice in ["SARIMAX", "TBATS"]:
+        with st.expander(f"📜 Resumen estadístico {model_choice}"):
             st.text(result["summary"])
 
     # ── Análisis Gemini ──────────────────────────────────────────────────
