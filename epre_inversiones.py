@@ -601,6 +601,106 @@ def page_chat_general():
             st.chat_message("assistant").write(reply)
         except Exception as e: 
             st.error(f"Error: {e}")
+            
+def page_ai_strategy_assistant():
+    st.header("🧠 Asistente Quant: Estrategia IA (Acciones y Bonos)")
+    st.markdown("""
+    Describe tu objetivo de inversión en lenguaje natural. La IA actuará como un analista cuantitativo, 
+    traduciendo tu idea en un conjunto de **restricciones y universos de activos (Acciones y Bonos)** 
+    listos para ser usados en los módulos de optimización.
+    """)
+    
+    if not st.session_state.get('preferred_ai'): 
+        st.warning("⚠️ Configura una API Key (OpenAI o Gemini) en la barra lateral para usar el asistente.")
+        return
+
+    user_strategy_prompt = st.text_area(
+        "Describe tu estrategia de inversión:",
+        height=120,
+        placeholder="Ej: 'Busco un portafolio conservador. Quiero un 60% en bonos soberanos argentinos (ley NY y local) y un 40% en acciones tecnológicas grandes de USA que no estén en burbuja (evitar P/E altísimos).'"
+    )
+
+    if st.button("Traducir Estrategia a Filtros", type="primary"):
+        if not user_strategy_prompt:
+            st.warning("Por favor, describe tu estrategia.")
+        else:
+            system_prompt = """
+            Eres un experto en finanzas cuantitativas e institucionales. Tu tarea es traducir la estrategia de inversión de un usuario en un conjunto de restricciones JSON para un modelo de optimización. 
+            Debes considerar tanto Renta Variable (Acciones) como Renta Fija (Bonos).
+            
+            Las claves exactas del JSON que debes generar son:
+            - 'k_assets' (integer): Número total de activos en el portafolio.
+            - 'asset_allocation' (dict): Pesos sugeridos. Ej: {"stocks": 0.40, "bonds": 0.60}.
+            - 'beta_range' (array of two floats): [min_beta, max_beta] para el riesgo de las acciones.
+            - 'pe_range' (array of two floats): [min_pe, max_pe] para valuación de acciones.
+            - 'duration_range' (array of two floats): [min_duration, max_duration] en años para el riesgo de tasa de los bonos.
+            - 'universe_stocks' (list of strings): Lista de tickers reales (ej. AAPL, MSFT) que encajen.
+            - 'universe_bonds' (list of strings): Lista de tickers de bonos reales (ej. TLT, AL30, GD30) que encajen.
+
+            Analiza la descripción del usuario y responde **SOLAMENTE CON UN BLOQUE DE CÓDIGO JSON VÁLIDO Y NADA MÁS**. No agregues texto introductorio.
+            """
+            
+            with st.spinner(f"IA Quant ({st.session_state.preferred_ai}) analizando tu estrategia..."):
+                try:
+                    raw_response = ""
+                    if st.session_state.preferred_ai == "OpenAI":
+                        client = OpenAI(api_key=st.session_state.openai_api_key)
+                        response = client.chat.completions.create(
+                            model=st.session_state.openai_model,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_strategy_prompt}
+                            ],
+                            temperature=0.1
+                        )
+                        raw_response = response.choices[0].message.content
+                        
+                    elif st.session_state.preferred_ai == "Gemini":
+                        genai.configure(api_key=st.session_state.gemini_api_key)
+                        model = genai.GenerativeModel(st.session_state.gemini_model)
+                        full_prompt = f"{system_prompt}\n\n**Descripción del Usuario:**\n{user_strategy_prompt}"
+                        response = model.generate_content(
+                            full_prompt, 
+                            generation_config=genai.types.GenerationConfig(temperature=0.1)
+                        )
+                        raw_response = response.text
+                    
+                    if raw_response:
+                        # Limpiar la respuesta para asegurar que es un JSON (quita los bloques markdown de código si los hay)
+                        json_text = re.search(r'\{.*\}', raw_response, re.DOTALL)
+                        
+                        if json_text:
+                            suggested_params = json.loads(json_text.group(0))
+                            
+                            st.subheader("📊 Filtros Cuantitativos Sugeridos")
+                            
+                            # Mostrar de forma visual amigable
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write("**Distribución de Activos (Allocation):**")
+                                st.json(suggested_params.get("asset_allocation", {}))
+                                st.write("**Restricciones Renta Variable:**")
+                                st.write(f"- Beta: {suggested_params.get('beta_range')} (Riesgo Mercado)")
+                                st.write(f"- P/E Ratio: {suggested_params.get('pe_range')} (Valuación)")
+                                st.write("**Universo Acciones:**", ", ".join(suggested_params.get("universe_stocks", [])))
+                            
+                            with col2:
+                                st.write("**Restricciones Renta Fija:**")
+                                st.write(f"- Duración (Años): {suggested_params.get('duration_range')} (Riesgo Tasa)")
+                                st.write("**Universo Bonos:**", ", ".join(suggested_params.get("universe_bonds", [])))
+                            
+                            st.markdown("---")
+                            st.write("**JSON Crudo (Para copiar a motores de optimización):**")
+                            st.code(json.dumps(suggested_params, indent=4), language="json")
+                            
+                            st.success("✅ ¡Listo! Puedes copiar estos tickers y usarlos en el **Dashboard Corporativo** (para optimizar) o en **Renta Fija**.")
+                        else:
+                            st.error("No se encontró un JSON válido en la respuesta.")
+                            st.write(raw_response)
+                            
+                except Exception as e:
+                    st.error(f"Error procesando la IA: {str(e)}")
+                    traceback.print_exc()
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  SIDEBAR Y NAVEGACIÓN
@@ -649,6 +749,7 @@ opciones = [
     "Inicio", 
     "📊 Dashboard Corporativo", 
     "🏛️ Renta Fija (Bonos y Curvas)", 
+    "🧠 Asistente Quant (Estrategia IA)",  # <--- NUEVA OPCIÓN AÑADIDA AQUÍ
     "🏦 Explorador IOL API", 
     "🌎 Explorador Global (Yahoo)", 
     "🔭 Modelos Avanzados (Forecast)", 
@@ -663,6 +764,7 @@ if sel != st.session_state.selected_page: st.session_state.selected_page = sel; 
 if sel == "Inicio": st.title("BPNos - Finanzas Corporativas"); st.info("Seleccione un módulo en la barra lateral.")
 elif sel == "📊 Dashboard Corporativo": page_corporate_dashboard()
 elif sel == "🏛️ Renta Fija (Bonos y Curvas)": page_fixed_income()
+elif sel == "🧠 Asistente Quant (Estrategia IA)": page_ai_strategy_assistant() # <--- NUEVO RUTEO AÑADIDO AQUÍ
 elif sel == "🏦 Explorador IOL API": page_iol_explorer()
 elif sel == "🌎 Explorador Global (Yahoo)": page_yahoo_explorer()
 elif sel == "🔭 Modelos Avanzados (Forecast)": page_forecast()
