@@ -82,7 +82,6 @@ def get_gsheets_client():
     try:
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
         ]
         creds_dict = dict(st.secrets["gcp_service_account"])
         # gspread necesita que private_key tenga saltos de línea reales
@@ -99,20 +98,25 @@ def get_gsheets_client():
 
 def get_or_create_worksheet(client, sheet_name: str, worksheet_name: str):
     """
-    Abre (o crea) el Google Sheet y la pestaña indicados.
-    La primera fila es siempre: name | tickers | weights
+    Abre el Google Sheet creado manualmente por el usuario.
+    NUNCA intenta crear el archivo (los Service Accounts no tienen
+    almacenamiento en Drive y eso genera error 403).
+    Solo crea la pestaña (worksheet) si no existe, lo cual sí es permitido.
     """
     try:
         spreadsheet = client.open(sheet_name)
     except gspread.SpreadsheetNotFound:
-        spreadsheet = client.create(sheet_name)
-        # Compartir como editor con el correo del service account
-        # (opcional, útil si también querés acceder manualmente)
-        # spreadsheet.share("tu-correo@gmail.com", perm_type="user", role="writer")
+        st.error(
+            f"❌ No se encontró el Google Sheet '{sheet_name}'. "
+            f"Asegurate de: 1) Que exista con ese nombre exacto, "
+            f"2) Que esté compartido con el Service Account como Editor."
+        )
+        raise
 
     try:
         worksheet = spreadsheet.worksheet(worksheet_name)
     except gspread.WorksheetNotFound:
+        # Crear la pestaña sí está permitido (no usa almacenamiento de Drive)
         worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=200, cols=3)
         worksheet.append_row(["name", "tickers", "weights"])
 
