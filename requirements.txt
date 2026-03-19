@@ -15,4 +15,5 @@ openai
 tbats
 xgboost
 lightgbm
+google-auth
 
