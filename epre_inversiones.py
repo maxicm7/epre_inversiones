@@ -58,7 +58,9 @@ st.set_page_config(layout="wide", page_title="BPNos – Finanzas Corporativas", 
 # Sheet que creaste y compartiste con el Service Account.
 # En secrets.toml: [google_sheets] / sheet_name = "BPNos_Portfolios"
 # ───────────────────────────────────────────────────────────────────────────
-SHEET_NAME = st.secrets.get("google_sheets", {}).get("sheet_name", "BPNos_Portfolios")
+SHEET_NAME = st.secrets.get("google_sheets", {}).get("sheet_name", "Epre_Inversiones")
+# ID directo del Sheet — permite abrir sin scope de Drive
+SHEET_ID   = st.secrets.get("google_sheets", {}).get("sheet_id", "")
 
 # Nombre de la pestaña (worksheet) dentro del Google Sheet
 WORKSHEET_NAME = "portfolios"
@@ -74,8 +76,8 @@ PORTFOLIO_FILE = "portfolios_data1.json"
 def get_gsheets_client():
     """
     Retorna un cliente gspread autenticado via Service Account.
-    Las credenciales se leen desde st.secrets["gcp_service_account"].
-    Retorna None si no está configurado o hay error.
+    Solo usa scope de Sheets (no Drive) para evitar error 403.
+    Abre el Sheet por ID para no necesitar scope de Drive.
     """
     if not GSHEETS_OK:
         return None
@@ -84,7 +86,6 @@ def get_gsheets_client():
             "https://www.googleapis.com/auth/spreadsheets",
         ]
         creds_dict = dict(st.secrets["gcp_service_account"])
-        # gspread necesita que private_key tenga saltos de línea reales
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
@@ -98,25 +99,25 @@ def get_gsheets_client():
 
 def get_or_create_worksheet(client, sheet_name: str, worksheet_name: str):
     """
-    Abre el Google Sheet creado manualmente por el usuario.
-    NUNCA intenta crear el archivo (los Service Accounts no tienen
-    almacenamiento en Drive y eso genera error 403).
-    Solo crea la pestaña (worksheet) si no existe, lo cual sí es permitido.
+    Abre el Sheet por ID (open_by_key) — no necesita scope de Drive.
+    Solo crea la pestaña si no existe.
     """
     try:
-        spreadsheet = client.open(sheet_name)
-    except gspread.SpreadsheetNotFound:
+        if SHEET_ID:
+            spreadsheet = client.open_by_key(SHEET_ID)
+        else:
+            spreadsheet = client.open(sheet_name)
+    except Exception as e:
         st.error(
-            f"❌ No se encontró el Google Sheet '{sheet_name}'. "
-            f"Asegurate de: 1) Que exista con ese nombre exacto, "
-            f"2) Que esté compartido con el Service Account como Editor."
+            f"❌ No se pudo abrir el Sheet. "
+            f"Verificá el sheet_id en Secrets y que esté compartido con el Service Account. "
+            f"Detalle: {e}"
         )
         raise
 
     try:
         worksheet = spreadsheet.worksheet(worksheet_name)
     except gspread.WorksheetNotFound:
-        # Crear la pestaña sí está permitido (no usa almacenamiento de Drive)
         worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=200, cols=3)
         worksheet.append_row(["name", "tickers", "weights"])
 
