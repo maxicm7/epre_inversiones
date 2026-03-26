@@ -845,6 +845,489 @@ def page_chat_general():
                 st.chat_message("assistant").write(reply)
             except Exception as e:
                 st.error(f"⚠️ Error: {e}")
+# ═══════════════════════════════════════════════════════════════════════════
+#  PÁGINA: FORECAST & MODELOS PREDICTIVOS (Avanzado)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def page_forecast():
+    """
+    Módulo de Forecasting con modelos estadísticos, ML y conceptos de investigación:
+    - ARIMA / SARIMA / GARCH
+    - Machine Learning (Random Forest, XGBoost)
+    - Co-ocurrencia dinámica y scoring homeostático
+    - Distribución de Gumbel para eventos extremos
+    - Ensemble adaptativo con ponderación por recencia
+    """
+    st.title("🔭 Forecast & Modelos Predictivos")
+    st.markdown("Modelos estadísticos, ML y estructuras de dependencia dinámica para series financieras.")
+    
+    # ── Pestañas de modelos ─────────────────────────────────────────────
+    tabs = st.tabs([
+        "📊 Datos & Preprocesamiento", 
+        "📈 Modelos Estadísticos", 
+        "🤖 Machine Learning", 
+        "🧬 Investigación (Homeostasis & Co-ocurrencia)",
+        "📋 Backtesting & Métricas"
+    ])
+    
+    # ── Estado inicial ─────────────────────────────────────────────────
+    if 'forecast_data' not in st.session_state:
+        st.session_state.forecast_data = None
+    if 'forecast_results' not in st.session_state:
+        st.session_state.forecast_results = {}
+    
+    # ── TAB 1: Carga y preprocesamiento ────────────────────────────────
+    with tabs[0]:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            ticker = st.text_input("Ticker / Activo", value="AL30").upper()
+        with c2:
+            period = st.selectbox("Período histórico", 
+                ["6mo", "1y", "2y", "5y", "max"], index=1)
+        with c3:
+            freq = st.selectbox("Frecuencia", ["D", "W", "M"], index=0)
+        
+        if st.button("📥 Cargar Datos", type="primary"):
+            with st.spinner("Descargando y procesando..."):
+                try:
+                    # Soporte multi-fuente
+                    if ticker.startswith("CAFCI:"):
+                        parts = ticker.split(":")
+                        s = fetch_cafci_historical_vcp(parts[1], parts[2], 
+                            pd.to_datetime("today") - pd.Timedelta(days=730), pd.to_datetime("today"))
+                        df = s.to_frame(name='close').dropna()
+                    else:
+                        adj_ticker = ticker if "." in ticker else ticker + ".BA"
+                        df = yf.download(adj_ticker, period=period, progress=False)
+                        if 'Close' in df.columns:
+                            df = df[['Close']].dropna()
+                            df.columns = ['close']
+                    
+                    if df.empty:
+                        st.error("⚠️ No hay datos disponibles.")
+                        return
+                    
+                    # Resample por frecuencia
+                    if freq != "D":
+                        df = df.resample(freq).last().dropna()
+                    
+                    # Features básicas
+                    df['returns'] = df['close'].pct_change()
+                    df['log_ret'] = np.log(df['close'] / df['close'].shift(1))
+                    df['volatility'] = df['returns'].rolling(20).std()
+                    df['momentum'] = df['close'] / df['close'].shift(10) - 1
+                    
+                    st.session_state.forecast_data = df
+                    st.success(f"✅ {len(df)} observaciones cargadas para {ticker}")
+                    
+                except Exception as e:
+                    st.error(f"⚠️ Error: {e}")
+                    traceback.print_exc()
+        
+        if st.session_state.forecast_data is not None:
+            df = st.session_state.forecast_data
+            st.subheader("📊 Vista de Datos")
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=df.index, y=df['close'], name='Precio', line=dict(width=2)))
+                fig.add_trace(go.Scatter(x=df.index, y=df['close'].rolling(20).mean(), 
+                    name='MA(20)', line=dict(dash='dot', width=1)))
+                fig.update_layout(title=f"Evolución de {ticker}", template="plotly_dark", height=300)
+                st.plotly_chart(fig, use_container_width=True)
+            with c2:
+                st.metric("Último Precio", f"{df['close'].iloc[-1]:,.2f}")
+                st.metric("Volatilidad (20d)", f"{df['volatility'].iloc[-1]*100:.2f}%")
+                st.metric("Retorno Reciente", f"{df['returns'].iloc[-1]*100:.2f}%")
+            st.dataframe(df.tail(10), use_container_width=True)
+    
+    # ── TAB 2: Modelos Estadísticos ───────────────────────────────────
+    with tabs[1]:
+        if st.session_state.forecast_data is None:
+            st.info("📥 Cargá datos primero en la pestaña anterior.")
+            return
+        
+        df = st.session_state.forecast_data.copy()
+        st.subheader("📈 Modelos Estadísticos Clásicos")
+        
+        model_type = st.radio("Seleccionar Modelo", 
+            ["ARIMA", "SARIMA", "Exponential Smoothing", "GARCH (Volatilidad)"], horizontal=True)
+        
+        steps = st.slider("Pasos a predecir", 1, 90, 30)
+        confidence = st.slider("Nivel de Confianza (%)", 80, 99, 95)
+        
+        if st.button("🚀 Ejecutar Modelo Estadístico"):
+            with st.spinner(f"Entrenando {model_type}..."):
+                try:
+                    series = df['close'].dropna()
+                    
+                    if model_type == "ARIMA":
+                        # Auto-ARIMA simplificado (p,d,q)
+                        from statsmodels.tsa.arima.model import ARIMA
+                        # Búsqueda grid simple para (p,d,q)
+                        best_aic = np.inf
+                        best_order = (1,1,1)
+                        for p in [1,2]:
+                            for d in [1]:
+                                for q in [1,2]:
+                                    try:
+                                        model = ARIMA(series, order=(p,d,q))
+                                        results = model.fit()
+                                        if results.aic < best_aic:
+                                            best_aic = results.aic
+                                            best_order = (p,d,q)
+                                    except:
+                                        pass
+                        model = ARIMA(series, order=best_order)
+                        results = model.fit()
+                        forecast = results.get_forecast(steps)
+                        pred_mean = forecast.predicted_mean
+                        conf_int = forecast.conf_int(alpha=1-confidence/100)
+                        
+                    elif model_type == "SARIMA":
+                        from statsmodels.tsa.statespace.sarimax import SARIMAX
+                        model = SARIMAX(series, order=(1,1,1), seasonal_order=(1,1,1,12), 
+                                       enforce_stationarity=False, enforce_invertibility=False)
+                        results = model.fit(disp=False)
+                        forecast = results.get_forecast(steps)
+                        pred_mean = forecast.predicted_mean
+                        conf_int = forecast.conf_int(alpha=1-confidence/100)
+                        
+                    elif model_type == "Exponential Smoothing":
+                        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+                        model = ExponentialSmoothing(series, trend='add', seasonal='add', seasonal_periods=12)
+                        results = model.fit()
+                        pred_mean = results.forecast(steps)
+                        # Intervalo aproximado
+                        std_err = results.resid.std()
+                        z = norm.ppf(1 - (1-confidence/100)/2)
+                        conf_int = pd.DataFrame({
+                            'lower': pred_mean - z * std_err * np.sqrt(np.arange(1, steps+1)),
+                            'upper': pred_mean + z * std_err * np.sqrt(np.arange(1, steps+1))
+                        }, index=pred_mean.index)
+                        
+                    elif model_type == "GARCH (Volatilidad)":
+                        from arch import arch_model
+                        rets = df['log_ret'].dropna() * 100  # En %
+                        model = arch_model(rets, vol='GARCH', p=1, q=1)
+                        results = model.fit(disp=False)
+                        forecast = results.forecast(horizon=steps)
+                        pred_mean = pd.Series([series.iloc[-1]] * steps, 
+                                            index=pd.date_range(series.index[-1]+pd.Timedelta(days=1), periods=steps, freq=df.index.freq or 'D'))
+                        conf_int = pd.DataFrame({
+                            'lower': pred_mean * np.exp(-np.sqrt(forecast.variance.values[0])/100),
+                            'upper': pred_mean * np.exp(np.sqrt(forecast.variance.values[0])/100)
+                        }, index=pred_mean.index)
+                    
+                    # Guardar resultados
+                    st.session_state.forecast_results[model_type] = {
+                        'predictions': pred_mean,
+                        'conf_int': conf_int,
+                        'model': results,
+                        'last_actual': series.iloc[-1]
+                    }
+                    
+                    # Visualización
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(x=series.index, y=series, name='Histórico', line=dict(color='#888')))
+                    fig.add_trace(go.Scatter(x=pred_mean.index, y=pred_mean, name='Predicción', 
+                                           line=dict(color='#00CC96', width=3)))
+                    fig.add_trace(go.Scatter(x=conf_int.index, y=conf_int['upper'], 
+                                           name=f'{confidence}% Superior', line=dict(dash='dash', color='rgba(0,204,150,0.3)'), showlegend=False))
+                    fig.add_trace(go.Scatter(x=conf_int.index, y=conf_int['lower'], 
+                                           name=f'{confidence}% Inferior', fill='tonexty', 
+                                           line=dict(dash='dash', color='rgba(0,204,150,0.3)')))
+                    fig.update_layout(title=f"Forecast {model_type} – {steps} pasos", 
+                                    template="plotly_dark", height=400)
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Métricas del modelo
+                    if hasattr(results, 'aic'):
+                        st.metric("AIC", f"{results.aic:.2f}")
+                    if hasattr(results, 'bic'):
+                        st.metric("BIC", f"{results.bic:.2f}")
+                    
+                except ImportError as e:
+                    st.error(f"⚠️ Paquete faltante: {e}. Instalá: pip install statsmodels arch")
+                except Exception as e:
+                    st.error(f"⚠️ Error en modelo: {e}")
+                    traceback.print_exc()
+    
+    # ── TAB 3: Machine Learning ───────────────────────────────────────
+    with tabs[2]:
+        if st.session_state.forecast_data is None:
+            st.info("📥 Cargá datos primero.")
+            return
+        
+        df = st.session_state.forecast_data.copy()
+        st.subheader("🤖 Modelos de Machine Learning")
+        
+        ml_model = st.selectbox("Algoritmo", ["Random Forest", "XGBoost", "Red Neuronal (LSTM-ready)"])
+        lookback = st.slider("Ventana de lookback (lags)", 5, 60, 20)
+        test_ratio = st.slider("% para testing", 10, 40, 20)
+        
+        if st.button("🧠 Entrenar Modelo ML"):
+            with st.spinner("Preparando features y entrenando..."):
+                try:
+                    from sklearn.ensemble import RandomForestRegressor
+                    from sklearn.model_selection import TimeSeriesSplit
+                    from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+                    
+                    # Feature engineering
+                    data = df['close'].copy()
+                    for lag in range(1, lookback+1):
+                        data = data.to_frame()
+                        data[f'lag_{lag}'] = data['close'].shift(lag)
+                    data['ma_5'] = data['close'].rolling(5).mean()
+                    data['ma_20'] = data['close'].rolling(20).mean()
+                    data['vol'] = data['close'].rolling(20).std()
+                    data = data.dropna()
+                    
+                    X = data.drop(columns=['close'])
+                    y = data['close']
+                    
+                    # Train/test split temporal
+                    split_idx = int(len(X) * (1 - test_ratio/100))
+                    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+                    y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+                    
+                    if ml_model == "Random Forest":
+                        model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
+                        model.fit(X_train, y_train)
+                        preds = model.predict(X_test)
+                        
+                    elif ml_model == "XGBoost":
+                        try:
+                            import xgboost as xgb
+                            model = xgb.XGBRegressor(n_estimators=100, max_depth=6, learning_rate=0.1, random_state=42)
+                            model.fit(X_train, y_train)
+                            preds = model.predict(X_test)
+                        except ImportError:
+                            st.error("⚠️ Instalá xgboost: pip install xgboost")
+                            return
+                            
+                    elif ml_model == "Red Neuronal (LSTM-ready)":
+                        st.info("ℹ️ Para LSTM completo se recomienda TensorFlow/Keras. Aquí usamos una aproximación con ML clásico.")
+                        model = RandomForestRegressor(n_estimators=50, random_state=42)
+                        model.fit(X_train, y_train)
+                        preds = model.predict(X_test)
+                    
+                    # Métricas
+                    mae = mean_absolute_error(y_test, preds)
+                    rmse = np.sqrt(mean_squared_error(y_test, preds))
+                    r2 = r2_score(y_test, preds)
+                    mape = np.mean(np.abs((y_test - preds) / y_test)) * 100
+                    
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("MAE", f"{mae:,.2f}")
+                    c2.metric("RMSE", f"{rmse:,.2f}")
+                    c3.metric("R²", f"{r2:.3f}")
+                    c4.metric("MAPE", f"{mape:.2f}%")
+                    
+                    # Feature importance
+                    if hasattr(model, 'feature_importances_'):
+                        fi = pd.DataFrame({
+                            'Feature': X.columns,
+                            'Importance': model.feature_importances_
+                        }).sort_values('Importance', ascending=False).head(10)
+                        fig_fi = px.bar(fi, x='Importance', y='Feature', orientation='h', 
+                                       title="Importancia de Features", template="plotly_dark")
+                        st.plotly_chart(fig_fi, use_container_width=True)
+                    
+                    # Predicción vs Real
+                    fig_pred = go.Figure()
+                    fig_pred.add_trace(go.Scatter(x=y_test.index, y=y_test, name='Real', line=dict(width=2)))
+                    fig_pred.add_trace(go.Scatter(x=y_test.index, y=preds, name='Predicho', 
+                                                line=dict(dash='dot', width=2)))
+                    fig_pred.update_layout(title="Predicción vs Real (Test Set)", template="plotly_dark")
+                    st.plotly_chart(fig_pred, use_container_width=True)
+                    
+                    # Guardar para ensemble
+                    st.session_state.forecast_results[f'ML_{ml_model}'] = {
+                        'predictions': pd.Series(preds, index=y_test.index),
+                        'actual': y_test,
+                        'metrics': {'MAE': mae, 'RMSE': rmse, 'R2': r2, 'MAPE': mape}
+                    }
+                    
+                except Exception as e:
+                    st.error(f"⚠️ Error en ML: {e}")
+                    traceback.print_exc()
+    
+    # ── TAB 4: Investigación (Homeostasis & Co-ocurrencia) ───────────
+    with tabs[3]:
+        if st.session_state.forecast_data is None:
+            st.info("📥 Cargá datos primero.")
+            return
+        
+        df = st.session_state.forecast_data.copy()
+        st.subheader("🧬 Modelos de Investigación: Homeostasis & Co-ocurrencia Dinámica")
+        st.markdown("""
+        > Implementación experimental de conceptos teóricos:
+        > - **Co-ocurrencia dinámica**: Matrices de dependencia temporal adaptativa
+        > - **Scoring homeostático**: Medida de equilibrio/desequilibrio del sistema
+        > - **Gumbel para extremos**: Modelado de colas y eventos raros
+        """)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            window_cooc = st.slider("Ventana Co-ocurrencia", 10, 100, 30)
+            threshold = st.slider("Umbral de señal (σ)", 0.5, 3.0, 1.5, 0.1)
+        with col2:
+            gumbel_loc = st.number_input("Gumbel: Parámetro ubicación", 0.0, 1.0, 0.0)
+            gumbel_scale = st.number_input("Gumbel: Parámetro escala", 0.01, 0.5, 0.1, 0.01)
+        
+        if st.button("🔬 Calcular Métricas de Investigación"):
+            with st.spinner("Procesando estructuras dinámicas..."):
+                try:
+                    returns = df['returns'].dropna()
+                    
+                    # 1. Matriz de Co-ocurrencia Dinámica (univariante adaptada)
+                    st.markdown("### 🔗 Matriz de Co-ocurrencia Dinámica")
+                    cooc_matrix = np.zeros((window_cooc, window_cooc))
+                    for i in range(window_cooc):
+                        for j in range(window_cooc):
+                            # Correlación de signos con lag
+                            lag_diff = abs(i - j)
+                            if lag_diff < len(returns) - window_cooc:
+                                s1 = np.sign(returns.iloc[i:i+window_cooc-lag_diff])
+                                s2 = np.sign(returns.iloc[i+lag_diff:i+window_cooc])
+                                cooc_matrix[i,j] = np.mean(s1 == s2)  # Frecuencia de co-movimiento
+                    
+                    fig_cooc = px.imshow(cooc_matrix, color_continuous_scale='RdYlGn',
+                                        title=f"Co-ocurrencia de Signos (Ventana={window_cooc})",
+                                        labels={'x': 'Lag', 'y': 'Tiempo'})
+                    st.plotly_chart(fig_cooc, use_container_width=True)
+                    
+                    # 2. Scoring Homeostático
+                    st.markdown("### ⚖️ Scoring Homeostático")
+                    st.markdown("Mide la desviación del 'equilibrio' del sistema financiero")
+                    
+                    # Definimos "equilibrio" como media móvil de retornos
+                    equilibrium = returns.rolling(window_cooc).mean()
+                    deviation = returns - equilibrium
+                    homeostatic_score = -np.abs(deviation) / (returns.rolling(window_cooc).std() + 1e-8)
+                    
+                    fig_homeo = go.Figure()
+                    fig_homeo.add_trace(go.Scatter(x=homeostatic_score.index, y=homeostatic_score, 
+                                                  name='Score Homeostático', line=dict(color='#00CC96')))
+                    fig_homeo.add_hline(y=-threshold, line_dash='dash', line_color='red', 
+                                       annotation_text='Zona de Desequilibrio')
+                    fig_homeo.add_hline(y=threshold, line_dash='dash', line_color='red')
+                    fig_homeo.update_layout(title="Evolución del Score Homeostático", 
+                                          template="plotly_dark", height=300)
+                    st.plotly_chart(fig_homeo, use_container_width=True)
+                    
+                    # Señales basadas en homeostasis
+                    signals = (homeostatic_score.rolling(5).mean() > threshold).astype(int) - \
+                             (homeostatic_score.rolling(5).mean() < -threshold).astype(int)
+                    st.metric("Señales Recientes (Homeostasis)", 
+                            f"🟢 {sum(signals.tail(20)==1)} compras | 🔴 {sum(signals.tail(20)==-1)} ventas")
+                    
+                    # 3. Distribución de Gumbel para Eventos Extremos
+                    st.markdown("### 🌪️ Modelado de Extremos con Gumbel")
+                    
+                    # Ajuste de Gumbel a retornos extremos (colas)
+                    from scipy.stats import gumbel_r, gumbel_l
+                    extreme_returns = returns[returns.abs() > returns.std() * 1.5]  # Colas
+                    
+                    if len(extreme_returns) > 10:
+                        # Ajuste MLE simplificado
+                        params_pos = gumbel_r.fit(extreme_returns[extreme_returns > 0])
+                        params_neg = gumbel_l.fit(extreme_returns[extreme_returns < 0])
+                        
+                        # Probabilidad de evento extremo en próximo período
+                        current_ret = returns.iloc[-1]
+                        prob_extreme_pos = 1 - gumbel_r.cdf(current_ret, *params_pos) if current_ret > 0 else 0
+                        prob_extreme_neg = gumbel_l.cdf(current_ret, *params_neg) if current_ret < 0 else 0
+                        
+                        c1, c2 = st.columns(2)
+                        c1.metric("Prob. Evento Extremo (+)", f"{prob_extreme_pos*100:.2f}%")
+                        c2.metric("Prob. Evento Extremo (-)", f"{prob_extreme_neg*100:.2f}%")
+                        
+                        # Visualización
+                        x = np.linspace(extreme_returns.min(), extreme_returns.max(), 100)
+                        fig_gumbel = go.Figure()
+                        fig_gumbel.add_trace(go.Histogram(x=extreme_returns, name='Extremos Observados',
+                                                        nbinsx=30, histnorm='probability density'))
+                        fig_gumbel.add_trace(go.Scatter(x=x, y=gumbel_r.pdf(x, *params_pos), 
+                                                      name='Gumbel (Cola +)', line=dict(color='green')))
+                        fig_gumbel.add_trace(go.Scatter(x=x, y=gumbel_l.pdf(x, *params_neg), 
+                                                      name='Gumbel (Cola -)', line=dict(color='red')))
+                        fig_gumbel.update_layout(title="Ajuste Gumbel a Colas de Distribución", 
+                                               template="plotly_dark", barmode='overlay')
+                        st.plotly_chart(fig_gumbel, use_container_width=True)
+                    else:
+                        st.warning("⚠️ Insuficientes eventos extremos para ajuste Gumbel confiable.")
+                    
+                    # 4. Ensemble Adaptativo (combinando señales)
+                    st.markdown("### 🎯 Ensemble Adaptativo de Señales")
+                    
+                    # Ponderación por recencia (exponencial)
+                    alpha = 0.95  # Factor de decaimiento
+                    weights = np.array([alpha**i for i in range(len(signals.dropna()))][::-1])
+                    weights = weights / weights.sum()
+                    
+                    # Señal ensemble: combina homeostasis + co-ocurrencia + tendencia
+                    trend_signal = np.sign(returns.rolling(10).mean().iloc[-1])
+                    homeo_signal = np.sign(homeostatic_score.iloc[-1])
+                    cooc_signal = np.sign(cooc_matrix[-1, :].mean() - 0.5)  # >0.5 = co-movimiento positivo
+                    
+                    ensemble_score = 0.4*trend_signal + 0.4*homeo_signal + 0.2*cooc_signal
+                    signal_map = {-1: "🔴 VENTA", 0: "⚪ NEUTRO", 1: "🟢 COMPRA"}
+                    st.markdown(f"#### Señal Ensemble: {signal_map.get(np.sign(ensemble_score), '⚪ NEUTRO')}")
+                    st.caption("Ponderación: 40% tendencia, 40% homeostasis, 20% co-ocurrencia")
+                    
+                except Exception as e:
+                    st.error(f"⚠️ Error en modelos de investigación: {e}")
+                    traceback.print_exc()
+    
+    # ── TAB 5: Backtesting & Métricas ─────────────────────────────────
+    with tabs[4]:
+        st.subheader("📋 Backtesting y Comparación de Modelos")
+        
+        if not st.session_state.forecast_results:
+            st.info("🚀 Ejecutá al menos un modelo en las pestañas anteriores para comparar.")
+            return
+        
+        # Tabla comparativa
+        results_list = []
+        for name, res in st.session_state.forecast_results.items():
+            if 'metrics' in res:
+                metrics = res['metrics']
+                results_list.append({
+                    'Modelo': name,
+                    'MAE': metrics.get('MAE', 'N/A'),
+                    'RMSE': metrics.get('RMSE', 'N/A'),
+                    'R²': metrics.get('R2', 'N/A'),
+                    'MAPE': metrics.get('MAPE', 'N/A')
+                })
+        
+        if results_list:
+            df_comp = pd.DataFrame(results_list)
+            st.dataframe(df_comp.style.format({
+                'MAE': '{:,.2f}', 'RMSE': '{:,.2f}', 'R²': '{:.3f}', 'MAPE': '{:.2f}%'
+            }), use_container_width=True)
+            
+            # Gráfico de comparación
+            if 'MAPE' in df_comp.columns and df_comp['MAPE'].iloc[0] != 'N/A':
+                fig_comp = px.bar(df_comp, x='Modelo', y='MAPE', 
+                                title="Comparación: Error Porcentual (MAPE) – Menor es mejor",
+                                color='MAPE', color_continuous_scale='RdYlGn_r')
+                st.plotly_chart(fig_comp, use_container_width=True)
+        
+        # Exportar resultados
+        st.markdown("---")
+        if st.button("📥 Exportar Resultados a CSV"):
+            import io
+            buffer = io.StringIO()
+            if results_list:
+                pd.DataFrame(results_list).to_csv(buffer, index=False)
+                st.download_button(
+                    label="Descargar CSV",
+                    data=buffer.getvalue(),
+                    file_name=f"forecast_results_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  SIDEBAR Y NAVEGACIÓN PRINCIPAL
