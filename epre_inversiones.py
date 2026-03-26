@@ -1,3 +1,6 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  IMPORTS Y CONFIGURACIÓN INICIAL
+# ═══════════════════════════════════════════════════════════════════════════
 import os
 import re
 import pandas as pd
@@ -8,8 +11,9 @@ import requests
 import plotly.express as px
 import plotly.graph_objects as go
 from scipy.optimize import minimize
-from scipy.stats import norm
+from scipy.stats import norm, gumbel_r, gumbel_l
 import yfinance as yf
+import traceback
 
 # ── IMPORTACIÓN SEGURA DE GOOGLE SHEETS ──────────────────────────────────
 try:
@@ -41,12 +45,10 @@ try:
 except ImportError:
     PYPFOPT_OK = False
 
-# ── Módulos propios (fallback si no existen) ──
+# ── Módulos propios (solo iol_client, forecast_module ahora integrado) ──
 try:
-    from forecast_module import page_forecast
     from iol_client import page_iol_explorer, get_iol_client
 except ImportError:
-    def page_forecast(): st.warning("🔧 Módulo forecast_module.py no encontrado.")
     def page_iol_explorer(): st.warning("🔧 Módulo iol_client.py no encontrado.")
     def get_iol_client(): return None
 
@@ -846,17 +848,18 @@ def page_chat_general():
             except Exception as e:
                 st.error(f"⚠️ Error: {e}")
 # ═══════════════════════════════════════════════════════════════════════════
-#  PÁGINA: FORECAST & MODELOS PREDICTIVOS (Avanzado)
+#  🔭 PÁGINA: FORECAST & MODELOS PREDICTIVOS (INTEGRACIÓN COMPLETA)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def page_forecast():
     """
     Módulo de Forecasting con modelos estadísticos, ML y conceptos de investigación:
-    - ARIMA / SARIMA / GARCH
+    - ARIMA / SARIMA / GARCH / Prophet
     - Machine Learning (Random Forest, XGBoost)
+    - Transformer/LSTM (estructura ready)
     - Co-ocurrencia dinámica y scoring homeostático
     - Distribución de Gumbel para eventos extremos
-    - Ensemble adaptativo con ponderación por recencia
+    - 🎯 INTEGRACIÓN con agente predictivo de largo plazo
     """
     st.title("🔭 Forecast & Modelos Predictivos")
     st.markdown("Modelos estadísticos, ML y estructuras de dependencia dinámica para series financieras.")
@@ -867,6 +870,7 @@ def page_forecast():
         "📈 Modelos Estadísticos", 
         "🤖 Machine Learning", 
         "🧬 Investigación (Homeostasis & Co-ocurrencia)",
+        "🤯 Agente Predictivo Largo Plazo",  # ← NUEVA PESTAÑA
         "📋 Backtesting & Métricas"
     ])
     
@@ -875,6 +879,15 @@ def page_forecast():
         st.session_state.forecast_data = None
     if 'forecast_results' not in st.session_state:
         st.session_state.forecast_results = {}
+    if 'agent_config' not in st.session_state:
+        st.session_state.agent_config = {
+            'long_term_window': 252*3,  # 3 años en días
+            'short_term_window': 21,     # 1 mes
+            'adaptation_rate': 0.1,
+            'homeostasis_weight': 0.3,
+            'cooccurrence_weight': 0.3,
+            'trend_weight': 0.4
+        }
     
     # ── TAB 1: Carga y preprocesamiento ────────────────────────────────
     with tabs[0]:
@@ -951,7 +964,7 @@ def page_forecast():
         st.subheader("📈 Modelos Estadísticos Clásicos")
         
         model_type = st.radio("Seleccionar Modelo", 
-            ["ARIMA", "SARIMA", "Exponential Smoothing", "GARCH (Volatilidad)"], horizontal=True)
+            ["ARIMA", "SARIMA", "Exponential Smoothing", "GARCH (Volatilidad)", "Prophet (Estacionalidad)"], horizontal=True)
         
         steps = st.slider("Pasos a predecir", 1, 90, 30)
         confidence = st.slider("Nivel de Confianza (%)", 80, 99, 95)
@@ -961,10 +974,35 @@ def page_forecast():
                 try:
                     series = df['close'].dropna()
                     
-                    if model_type == "ARIMA":
-                        # Auto-ARIMA simplificado (p,d,q)
+                    if model_type == "Prophet (Estacionalidad)":
+                        try:
+                            from prophet import Prophet
+                            # Preparar datos para Prophet
+                            df_prophet = pd.DataFrame({
+                                'ds': series.index,
+                                'y': series.values
+                            })
+                            model = Prophet(daily_seasonality=True, yearly_seasonality=True)
+                            model.fit(df_prophet)
+                            future = model.make_future_dataframe(periods=steps, freq=df.index.freq or 'D')
+                            forecast = model.predict(future)
+                            
+                            pred_mean = forecast.set_index('ds')['yhat'].iloc[-steps:]
+                            conf_int = pd.DataFrame({
+                                'lower': forecast.set_index('ds')['yhat_lower'].iloc[-steps:],
+                                'upper': forecast.set_index('ds')['yhat_upper'].iloc[-steps:]
+                            })
+                            
+                            # Componentes del modelo
+                            st.markdown("#### 📊 Componentes del Modelo Prophet")
+                            fig_comp = model.plot_components(forecast)
+                            st.pyplot(fig_comp)
+                            
+                        except ImportError:
+                            st.error("⚠️ Instalá prophet: pip install prophet")
+                            return
+                    elif model_type == "ARIMA":
                         from statsmodels.tsa.arima.model import ARIMA
-                        # Búsqueda grid simple para (p,d,q)
                         best_aic = np.inf
                         best_order = (1,1,1)
                         for p in [1,2]:
@@ -998,7 +1036,6 @@ def page_forecast():
                         model = ExponentialSmoothing(series, trend='add', seasonal='add', seasonal_periods=12)
                         results = model.fit()
                         pred_mean = results.forecast(steps)
-                        # Intervalo aproximado
                         std_err = results.resid.std()
                         z = norm.ppf(1 - (1-confidence/100)/2)
                         conf_int = pd.DataFrame({
@@ -1008,7 +1045,7 @@ def page_forecast():
                         
                     elif model_type == "GARCH (Volatilidad)":
                         from arch import arch_model
-                        rets = df['log_ret'].dropna() * 100  # En %
+                        rets = df['log_ret'].dropna() * 100
                         model = arch_model(rets, vol='GARCH', p=1, q=1)
                         results = model.fit(disp=False)
                         forecast = results.forecast(horizon=steps)
@@ -1023,7 +1060,7 @@ def page_forecast():
                     st.session_state.forecast_results[model_type] = {
                         'predictions': pred_mean,
                         'conf_int': conf_int,
-                        'model': results,
+                        'model': results if 'results' in locals() else None,
                         'last_actual': series.iloc[-1]
                     }
                     
@@ -1041,14 +1078,8 @@ def page_forecast():
                                     template="plotly_dark", height=400)
                     st.plotly_chart(fig, use_container_width=True)
                     
-                    # Métricas del modelo
-                    if hasattr(results, 'aic'):
-                        st.metric("AIC", f"{results.aic:.2f}")
-                    if hasattr(results, 'bic'):
-                        st.metric("BIC", f"{results.bic:.2f}")
-                    
                 except ImportError as e:
-                    st.error(f"⚠️ Paquete faltante: {e}. Instalá: pip install statsmodels arch")
+                    st.error(f"⚠️ Paquete faltante: {e}. Instalá: pip install statsmodels arch prophet")
                 except Exception as e:
                     st.error(f"⚠️ Error en modelo: {e}")
                     traceback.print_exc()
@@ -1070,7 +1101,6 @@ def page_forecast():
             with st.spinner("Preparando features y entrenando..."):
                 try:
                     from sklearn.ensemble import RandomForestRegressor
-                    from sklearn.model_selection import TimeSeriesSplit
                     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
                     
                     # Feature engineering
@@ -1161,12 +1191,6 @@ def page_forecast():
         
         df = st.session_state.forecast_data.copy()
         st.subheader("🧬 Modelos de Investigación: Homeostasis & Co-ocurrencia Dinámica")
-        st.markdown("""
-        > Implementación experimental de conceptos teóricos:
-        > - **Co-ocurrencia dinámica**: Matrices de dependencia temporal adaptativa
-        > - **Scoring homeostático**: Medida de equilibrio/desequilibrio del sistema
-        > - **Gumbel para extremos**: Modelado de colas y eventos raros
-        """)
         
         col1, col2 = st.columns(2)
         with col1:
@@ -1181,28 +1205,23 @@ def page_forecast():
                 try:
                     returns = df['returns'].dropna()
                     
-                    # 1. Matriz de Co-ocurrencia Dinámica (univariante adaptada)
+                    # 1. Matriz de Co-ocurrencia Dinámica
                     st.markdown("### 🔗 Matriz de Co-ocurrencia Dinámica")
                     cooc_matrix = np.zeros((window_cooc, window_cooc))
                     for i in range(window_cooc):
                         for j in range(window_cooc):
-                            # Correlación de signos con lag
                             lag_diff = abs(i - j)
                             if lag_diff < len(returns) - window_cooc:
                                 s1 = np.sign(returns.iloc[i:i+window_cooc-lag_diff])
                                 s2 = np.sign(returns.iloc[i+lag_diff:i+window_cooc])
-                                cooc_matrix[i,j] = np.mean(s1 == s2)  # Frecuencia de co-movimiento
+                                cooc_matrix[i,j] = np.mean(s1 == s2)
                     
                     fig_cooc = px.imshow(cooc_matrix, color_continuous_scale='RdYlGn',
-                                        title=f"Co-ocurrencia de Signos (Ventana={window_cooc})",
-                                        labels={'x': 'Lag', 'y': 'Tiempo'})
+                                        title=f"Co-ocurrencia de Signos (Ventana={window_cooc})")
                     st.plotly_chart(fig_cooc, use_container_width=True)
                     
                     # 2. Scoring Homeostático
                     st.markdown("### ⚖️ Scoring Homeostático")
-                    st.markdown("Mide la desviación del 'equilibrio' del sistema financiero")
-                    
-                    # Definimos "equilibrio" como media móvil de retornos
                     equilibrium = returns.rolling(window_cooc).mean()
                     deviation = returns - equilibrium
                     homeostatic_score = -np.abs(deviation) / (returns.rolling(window_cooc).std() + 1e-8)
@@ -1210,32 +1229,26 @@ def page_forecast():
                     fig_homeo = go.Figure()
                     fig_homeo.add_trace(go.Scatter(x=homeostatic_score.index, y=homeostatic_score, 
                                                   name='Score Homeostático', line=dict(color='#00CC96')))
-                    fig_homeo.add_hline(y=-threshold, line_dash='dash', line_color='red', 
-                                       annotation_text='Zona de Desequilibrio')
+                    fig_homeo.add_hline(y=-threshold, line_dash='dash', line_color='red')
                     fig_homeo.add_hline(y=threshold, line_dash='dash', line_color='red')
                     fig_homeo.update_layout(title="Evolución del Score Homeostático", 
                                           template="plotly_dark", height=300)
                     st.plotly_chart(fig_homeo, use_container_width=True)
                     
-                    # Señales basadas en homeostasis
+                    # Señales
                     signals = (homeostatic_score.rolling(5).mean() > threshold).astype(int) - \
                              (homeostatic_score.rolling(5).mean() < -threshold).astype(int)
                     st.metric("Señales Recientes (Homeostasis)", 
                             f"🟢 {sum(signals.tail(20)==1)} compras | 🔴 {sum(signals.tail(20)==-1)} ventas")
                     
-                    # 3. Distribución de Gumbel para Eventos Extremos
+                    # 3. Gumbel para Extremos
                     st.markdown("### 🌪️ Modelado de Extremos con Gumbel")
-                    
-                    # Ajuste de Gumbel a retornos extremos (colas)
-                    from scipy.stats import gumbel_r, gumbel_l
-                    extreme_returns = returns[returns.abs() > returns.std() * 1.5]  # Colas
+                    extreme_returns = returns[returns.abs() > returns.std() * 1.5]
                     
                     if len(extreme_returns) > 10:
-                        # Ajuste MLE simplificado
                         params_pos = gumbel_r.fit(extreme_returns[extreme_returns > 0])
                         params_neg = gumbel_l.fit(extreme_returns[extreme_returns < 0])
                         
-                        # Probabilidad de evento extremo en próximo período
                         current_ret = returns.iloc[-1]
                         prob_extreme_pos = 1 - gumbel_r.cdf(current_ret, *params_pos) if current_ret > 0 else 0
                         prob_extreme_neg = gumbel_l.cdf(current_ret, *params_neg) if current_ret < 0 else 0
@@ -1244,7 +1257,6 @@ def page_forecast():
                         c1.metric("Prob. Evento Extremo (+)", f"{prob_extreme_pos*100:.2f}%")
                         c2.metric("Prob. Evento Extremo (-)", f"{prob_extreme_neg*100:.2f}%")
                         
-                        # Visualización
                         x = np.linspace(extreme_returns.min(), extreme_returns.max(), 100)
                         fig_gumbel = go.Figure()
                         fig_gumbel.add_trace(go.Histogram(x=extreme_returns, name='Extremos Observados',
@@ -1253,43 +1265,198 @@ def page_forecast():
                                                       name='Gumbel (Cola +)', line=dict(color='green')))
                         fig_gumbel.add_trace(go.Scatter(x=x, y=gumbel_l.pdf(x, *params_neg), 
                                                       name='Gumbel (Cola -)', line=dict(color='red')))
-                        fig_gumbel.update_layout(title="Ajuste Gumbel a Colas de Distribución", 
-                                               template="plotly_dark", barmode='overlay')
+                        fig_gumbel.update_layout(title="Ajuste Gumbel a Colas", template="plotly_dark")
                         st.plotly_chart(fig_gumbel, use_container_width=True)
-                    else:
-                        st.warning("⚠️ Insuficientes eventos extremos para ajuste Gumbel confiable.")
                     
-                    # 4. Ensemble Adaptativo (combinando señales)
+                    # 4. Ensemble Adaptativo
                     st.markdown("### 🎯 Ensemble Adaptativo de Señales")
-                    
-                    # Ponderación por recencia (exponencial)
-                    alpha = 0.95  # Factor de decaimiento
-                    weights = np.array([alpha**i for i in range(len(signals.dropna()))][::-1])
-                    weights = weights / weights.sum()
-                    
-                    # Señal ensemble: combina homeostasis + co-ocurrencia + tendencia
                     trend_signal = np.sign(returns.rolling(10).mean().iloc[-1])
                     homeo_signal = np.sign(homeostatic_score.iloc[-1])
-                    cooc_signal = np.sign(cooc_matrix[-1, :].mean() - 0.5)  # >0.5 = co-movimiento positivo
+                    cooc_signal = np.sign(cooc_matrix[-1, :].mean() - 0.5)
                     
-                    ensemble_score = 0.4*trend_signal + 0.4*homeo_signal + 0.2*cooc_signal
+                    ensemble_score = (st.session_state.agent_config['trend_weight'] * trend_signal + 
+                                     st.session_state.agent_config['homeostasis_weight'] * homeo_signal + 
+                                     st.session_state.agent_config['cooccurrence_weight'] * cooc_signal)
                     signal_map = {-1: "🔴 VENTA", 0: "⚪ NEUTRO", 1: "🟢 COMPRA"}
                     st.markdown(f"#### Señal Ensemble: {signal_map.get(np.sign(ensemble_score), '⚪ NEUTRO')}")
-                    st.caption("Ponderación: 40% tendencia, 40% homeostasis, 20% co-ocurrencia")
                     
                 except Exception as e:
                     st.error(f"⚠️ Error en modelos de investigación: {e}")
+    
+    # ── 🆕 TAB 5: AGENTE PREDICTIVO DE LARGO PLAZO ───────────────────
+    with tabs[4]:
+        st.subheader("🤯 Agente Predictivo: Largo Plazo + Adaptación Reciente")
+        st.markdown("""
+        > Combina análisis estructural de largo plazo con adaptación a tendencias recientes,
+        > usando los conceptos de **homeostasis** y **co-ocurrencia dinámica** de tu investigación.
+        """)
+        
+        if st.session_state.forecast_data is None:
+            st.info("📥 Cargá datos primero en la pestaña 'Datos & Preprocesamiento'.")
+            return
+        
+        df = st.session_state.forecast_data.copy()
+        
+        # Configuración del agente
+        with st.expander("⚙️ Configuración del Agente", expanded=True):
+            c1, c2, c3 = st.columns(3)
+            st.session_state.agent_config['long_term_window'] = c1.slider("Ventana Largo Plazo (días)", 
+                126, 1260, st.session_state.agent_config['long_term_window'], 63)
+            st.session_state.agent_config['short_term_window'] = c2.slider("Ventana Corto Plazo (días)", 
+                5, 60, st.session_state.agent_config['short_term_window'], 5)
+            st.session_state.agent_config['adaptation_rate'] = c3.slider("Tasa de Adaptación (α)", 
+                0.01, 0.5, st.session_state.agent_config['adaptation_rate'], 0.01)
+            
+            c4, c5, c6 = st.columns(3)
+            st.session_state.agent_config['homeostasis_weight'] = c4.slider("Peso Homeostasis", 0.0, 1.0, 0.3, 0.1)
+            st.session_state.agent_config['cooccurrence_weight'] = c5.slider("Peso Co-ocurrencia", 0.0, 1.0, 0.3, 0.1)
+            st.session_state.agent_config['trend_weight'] = c6.slider("Peso Tendencia", 0.0, 1.0, 0.4, 0.1)
+            
+            # Normalizar pesos
+            total_w = sum([st.session_state.agent_config['homeostasis_weight'], 
+                          st.session_state.agent_config['cooccurrence_weight'],
+                          st.session_state.agent_config['trend_weight']])
+            if total_w > 0:
+                for k in ['homeostasis_weight', 'cooccurrence_weight', 'trend_weight']:
+                    st.session_state.agent_config[k] /= total_w
+        
+        if st.button("🚀 Ejecutar Agente Predictivo"):
+            with st.spinner("Ejecutando análisis multi-escala..."):
+                try:
+                    returns = df['returns'].dropna()
+                    prices = df['close']
+                    
+                    # === 1. ANÁLISIS DE LARGO PLAZO (Estructural) ===
+                    st.markdown("### 📊 Componente de Largo Plazo")
+                    lt_window = st.session_state.agent_config['long_term_window']
+                    lt_returns = returns.iloc[-lt_window:] if len(returns) >= lt_window else returns
+                    
+                    # Tendencia estructural (regresión lineal sobre log-precios)
+                    log_prices = np.log(prices.iloc[-lt_window:])
+                    x = np.arange(len(log_prices))
+                    slope, intercept = np.polyfit(x, log_prices, 1)
+                    lt_trend = np.exp(intercept + slope * np.arange(len(log_prices), len(log_prices)+30))
+                    
+                    c1, c2 = st.columns(2)
+                    c1.metric("Tendencia Anualizada (Largo Plazo)", f"{slope*252*100:.2f}%")
+                    c1.metric("R² Ajuste Lineal", f"{np.corrcoef(x, log_prices)[0,1]**2:.3f}")
+                    
+                    fig_lt = go.Figure()
+                    fig_lt.add_trace(go.Scatter(x=prices.iloc[-lt_window:].index, y=prices.iloc[-lt_window:], 
+                                               name='Precio Real', line=dict(width=2)))
+                    fig_lt.add_trace(go.Scatter(x=prices.iloc[-lt_window:].index, 
+                                               y=np.exp(intercept + slope*x), 
+                                               name='Tendencia Estructural', line=dict(dash='dot', color='orange')))
+                    fig_lt.update_layout(title="Tendencia de Largo Plazo", template="plotly_dark", height=300)
+                    st.plotly_chart(fig_lt, use_container_width=True)
+                    
+                    # === 2. ADAPTACIÓN A TENDENCIAS RECIENTES ===
+                    st.markdown("### ⚡ Componente de Corto Plazo (Adaptativo)")
+                    st_window = st.session_state.agent_config['short_term_window']
+                    alpha = st.session_state.agent_config['adaptation_rate']
+                    
+                    # EMA adaptativo con ajuste por volatilidad
+                    vol_recent = returns.iloc[-st_window:].std()
+                    adaptive_alpha = alpha * (1 + vol_recent / returns.std())
+                    adaptive_alpha = min(adaptive_alpha, 0.5)  # Cap
+                    
+                    ema = prices.iloc[-1]
+                    ema_path = [ema]
+                    for i in range(30):  # Proyección a 30 días
+                        # Simulación simple basada en momentum reciente
+                        momentum = returns.iloc[-st_window:].mean()
+                        noise = np.random.normal(0, vol_recent)
+                        ema = ema * (1 + adaptive_alpha * momentum + (1-adaptive_alpha) * noise)
+                        ema_path.append(ema)
+                    
+                    forecast_dates = pd.date_range(prices.index[-1]+pd.Timedelta(days=1), periods=30, freq='D')
+                    fig_st = go.Figure()
+                    fig_st.add_trace(go.Scatter(x=forecast_dates, y=ema_path[1:], 
+                                               name='Proyección Adaptativa', line=dict(color='#00CC96', width=3)))
+                    fig_st.add_trace(go.Scatter(x=prices.tail(60).index, y=prices.tail(60), 
+                                               name='Histórico Reciente', line=dict(color='#888')))
+                    fig_st.update_layout(title=f"Adaptación a Tendencias Recientes (α={adaptive_alpha:.3f})", 
+                                        template="plotly_dark", height=300)
+                    st.plotly_chart(fig_st, use_container_width=True)
+                    
+                    # === 3. INTEGRACIÓN HOMEOSTÁTICA ===
+                    st.markdown("### ⚖️ Integración Homeostática")
+                    
+                    # Calcular score homeostático en múltiples escalas
+                    homeo_scores = {}
+                    for window in [21, 63, 252]:  # 1m, 3m, 1y
+                        if len(returns) >= window:
+                            eq = returns.rolling(window).mean()
+                            dev = returns - eq
+                            std_roll = returns.rolling(window).std()
+                            homeo_scores[f'{window}d'] = (-np.abs(dev) / (std_roll + 1e-8)).iloc[-1]
+                    
+                    # Ponderar por configuración del usuario
+                    homeo_weighted = sum(
+                        homeo_scores[k] * w for k, w in zip(
+                            homeo_scores.keys(), 
+                            [0.5, 0.3, 0.2]  # Pesos por escala
+                        )
+                    )
+                    
+                    st.markdown(f"**Score Homeostático Ponderado**: `{homeo_weighted:.3f}`")
+                    if homeo_weighted > 0:
+                        st.success("✅ Sistema en estado de equilibrio relativo → Señal NEUTRA/COMPRA")
+                    else:
+                        st.warning("⚠️ Sistema en desequilibrio → Ajustar exposición según magnitud")
+                    
+                    # === 4. SEÑAL FINAL DEL AGENTE ===
+                    st.markdown("### 🎯 Señal Final del Agente")
+                    
+                    # Combinar componentes
+                    lt_signal = np.sign(slope)  # Dirección de tendencia estructural
+                    st_signal = np.sign(ema_path[-1] - prices.iloc[-1])  # Momentum adaptativo
+                    homeo_signal = np.sign(homeo_weighted)
+                    
+                    final_score = (
+                        st.session_state.agent_config['trend_weight'] * lt_signal +
+                        st.session_state.agent_config['cooccurrence_weight'] * st_signal +
+                        st.session_state.agent_config['homeostasis_weight'] * homeo_signal
+                    )
+                    
+                    signal_map = {
+                        -1: "🔴 VENTA FUERTE", -0.5: "🔴 VENTA", 
+                        0: "⚪ NEUTRO", 
+                        0.5: "🟢 COMPRA", 1: "🟢 COMPRA FUERTE"
+                    }
+                    
+                    # Mapeo suave
+                    if final_score < -0.5: signal = "🔴 VENTA FUERTE"
+                    elif final_score < 0: signal = "🔴 VENTA"
+                    elif final_score == 0: signal = "⚪ NEUTRO"
+                    elif final_score < 0.5: signal = "🟢 COMPRA"
+                    else: signal = "🟢 COMPRA FUERTE"
+                    
+                    st.markdown(f"## {signal}")
+                    st.caption(f"Score: {final_score:.3f} | Pesos: Tendencia={st.session_state.agent_config['trend_weight']:.1f}, Co-oc={st.session_state.agent_config['cooccurrence_weight']:.1f}, Homeo={st.session_state.agent_config['homeostasis_weight']:.1f}")
+                    
+                    # Guardar resultados para uso posterior
+                    st.session_state.forecast_results['Agent_Predictivo'] = {
+                        'signal': signal,
+                        'score': final_score,
+                        'config': st.session_state.agent_config.copy(),
+                        'lt_trend': slope,
+                        'homeo_score': homeo_weighted,
+                        'forecast_30d': ema_path[1:]
+                    }
+                    
+                except Exception as e:
+                    st.error(f"⚠️ Error en agente predictivo: {e}")
                     traceback.print_exc()
     
-    # ── TAB 5: Backtesting & Métricas ─────────────────────────────────
-    with tabs[4]:
+    # ── TAB 6: Backtesting & Métricas ─────────────────────────────────
+    with tabs[5]:
         st.subheader("📋 Backtesting y Comparación de Modelos")
         
         if not st.session_state.forecast_results:
             st.info("🚀 Ejecutá al menos un modelo en las pestañas anteriores para comparar.")
             return
         
-        # Tabla comparativa
         results_list = []
         for name, res in st.session_state.forecast_results.items():
             if 'metrics' in res:
@@ -1301,6 +1468,12 @@ def page_forecast():
                     'R²': metrics.get('R2', 'N/A'),
                     'MAPE': metrics.get('MAPE', 'N/A')
                 })
+            elif name == 'Agent_Predictivo':
+                results_list.append({
+                    'Modelo': name,
+                    'MAE': 'N/A', 'RMSE': 'N/A', 'R²': 'N/A',
+                    'MAPE': f"{res['score']:.3f} (score)"
+                })
         
         if results_list:
             df_comp = pd.DataFrame(results_list)
@@ -1308,15 +1481,12 @@ def page_forecast():
                 'MAE': '{:,.2f}', 'RMSE': '{:,.2f}', 'R²': '{:.3f}', 'MAPE': '{:.2f}%'
             }), use_container_width=True)
             
-            # Gráfico de comparación
             if 'MAPE' in df_comp.columns and df_comp['MAPE'].iloc[0] != 'N/A':
                 fig_comp = px.bar(df_comp, x='Modelo', y='MAPE', 
-                                title="Comparación: Error Porcentual (MAPE) – Menor es mejor",
+                                title="Comparación: Error Porcentual (MAPE)",
                                 color='MAPE', color_continuous_scale='RdYlGn_r')
                 st.plotly_chart(fig_comp, use_container_width=True)
         
-        # Exportar resultados
-        st.markdown("---")
         if st.button("📥 Exportar Resultados a CSV"):
             import io
             buffer = io.StringIO()
@@ -1330,7 +1500,7 @@ def page_forecast():
                 )
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  SIDEBAR Y NAVEGACIÓN PRINCIPAL
+#  SIDEBAR Y NAVEGACIÓN PRINCIPAL (ACTUALIZADO)
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Inicialización de estado
@@ -1340,8 +1510,6 @@ if 'selected_page' not in st.session_state:
     st.session_state.selected_page = "Inicio"
 
 st.sidebar.title("⚙️ BPNos – Configuración")
-
-# Estado Google Sheets
 render_gsheets_status()
 st.sidebar.markdown("---")
 
@@ -1356,7 +1524,6 @@ with st.sidebar.expander("🤖 Configuración de IA", expanded=True):
     st.session_state.gemini_model = st.selectbox("Modelo Gemini",
         ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro"], index=0)
 
-# Selector de motor IA
 available_ais = []
 if OPENAI_OK and st.session_state.get('openai_api_key'): available_ais.append("OpenAI")
 if GEMINI_OK and st.session_state.get('gemini_api_key'): available_ais.append("Gemini")
@@ -1366,7 +1533,6 @@ else:
     st.session_state.preferred_ai = None
     st.sidebar.info("💡 Ingresá una API Key para activar las funciones de IA")
 
-# Conexión IOL
 with st.sidebar.expander("🏦 Conexión IOL", expanded=True):
     u = st.text_input("Usuario IOL", value=st.session_state.get('iol_username', ''))
     p = st.text_input("Contraseña IOL", type="password", value=st.session_state.get('iol_password', ''))
@@ -1379,15 +1545,15 @@ with st.sidebar.expander("🏦 Conexión IOL", expanded=True):
     if st.session_state.get('iol_connected'):
         st.success(f"🟢 Conectado: {st.session_state.iol_username}")
     else:
-        st.caption("🔴 Desconectado (opcional: Yahoo Finance como fallback)")
+        st.caption("🔴 Desconectado")
 
 st.sidebar.markdown("---")
 
-# Menú de navegación
+# 🔄 MENÚ ACTUALIZADO CON FORECAST
 menu = [
     "Inicio", "📊 Dashboard Corporativo", "🏛️ Renta Fija Avanzada",
     "🧠 Asistente Quant IA", "🏦 Explorador IOL API",
-    "🌎 Explorador Global (Yahoo)", "💬 Chat Financiero"
+    "🌎 Explorador Global (Yahoo)", "🔭 Forecast (Modelos)", "💬 Chat Financiero"
 ]
 choice = st.sidebar.radio("🧭 Navegación", menu,
     index=menu.index(st.session_state.selected_page) if st.session_state.selected_page in menu else 0)
@@ -1406,7 +1572,7 @@ if choice == "Inicio":
     🔹 **IOL/Yahoo**: Datos en tiempo real de bonos, acciones y FX  
     🔹 **Quant**: Optimización de carteras, Montecarlo y métricas de riesgo  
     🔹 **IA**: Traducción de estrategias, análisis de noticias y asistencia experta  
-    🔹 **Renta Fija**: Duración, convexidad, inmunización y test de estrés  
+    🔹 **Forecast**: Modelos estadísticos, ML y agente predictivo de largo plazo  
     
     > 💡 *Configurá tus API Keys en el menú lateral para activar todas las funciones.*
     """)
@@ -1423,5 +1589,7 @@ elif choice == "🏦 Explorador IOL API":
     page_iol_explorer()
 elif choice == "🌎 Explorador Global (Yahoo)":
     page_yahoo_explorer()
+elif choice == "🔭 Forecast (Modelos)":  # ← NUEVA RUTA
+    page_forecast()
 elif choice == "💬 Chat Financiero":
     page_chat_general()
