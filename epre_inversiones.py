@@ -548,7 +548,7 @@ def render_gsheets_status():
 
 def page_corporate_dashboard():
     st.title("📊 Dashboard Corporativo Integral")
-    tabs = st.tabs(["💼 Gestión de Portafolios", "🚀 Optimización & Riesgo", "🔮 Forecast & Simulación"])
+    tabs = st.tabs(["💼 Gestión de Portafolios", "🚀 Optimización & Riesgo con 🔮 Forecast & Simulación"])
 
     with tabs[0]:
         c1, c2 = st.columns([1, 1.5])
