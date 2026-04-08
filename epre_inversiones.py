@@ -51,7 +51,7 @@ except ImportError:
     def get_iol_client(): return None
 
 # ── Configuración Global ──────────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="BPNos – Finanzas Corporativas", page_icon="📈")
+st.set_page_config(layout="wide", page_title="EPRE INVERSIONES", page_icon="📈")
 
 # ───────────────────────────────────────────────────────────────────────────
 # NOMBRE DE LA HOJA — debe coincidir exactamente con el nombre del Google
